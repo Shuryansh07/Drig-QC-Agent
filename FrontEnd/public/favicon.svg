@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DRIG">
+  <rect width="512" height="512" fill="#0b2f5c"/>
+  <path d="M160 128h96c70.7 0 128 57.3 128 128s-57.3 128-128 128h-96V128zm64 64v128h32c35.3 0 64-28.7 64-64s-28.7-64-64-64h-32z" fill="#ffffff"/>
+  <rect x="160" y="408" width="192" height="24" rx="12" fill="#f2b705"/>
+</svg>

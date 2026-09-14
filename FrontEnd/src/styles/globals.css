@@ -1,0 +1,200 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------------------------------------------------
+   Palette
+
+   Follows FRONTEND_DESIGN.md §1 and §6. Every value here is chosen for a phone
+   held at arm's length in either direct sunlight or a dark workshop, not for a
+   desk monitor. Nothing lighter than oklch(0.45) is ever used for text.
+
+   Signal blue carries primary actions; hi-vis amber carries "still working" and
+   caution. Red is reserved exclusively for genuine safety steps inside an
+   answer — never for "not covered", "clarify" or "conflict", which are the
+   system working correctly (§5).
+--------------------------------------------------------------------------- */
+
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.22 0 0);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0 0);
+
+  --primary: oklch(0.42 0.115 255);
+  --primary-foreground: oklch(0.99 0 0);
+
+  --secondary: oklch(0.95 0.006 255);
+  --secondary-foreground: oklch(0.28 0.03 255);
+
+  --muted: oklch(0.96 0.003 255);
+  --muted-foreground: oklch(0.45 0 0);
+
+  --accent: oklch(0.94 0.02 255);
+  --accent-foreground: oklch(0.28 0.04 255);
+
+  --destructive: oklch(0.51 0.19 27);
+  --destructive-foreground: oklch(0.99 0 0);
+
+  --border: oklch(0.88 0.004 255);
+  --input: oklch(0.84 0.004 255);
+  --ring: oklch(0.42 0.115 255);
+
+  /* Domain tokens — not part of shadcn's set */
+  --answer-fg: oklch(0.22 0 0);
+  --warn-bg: oklch(0.96 0.05 85);
+  --warn-fg: oklch(0.36 0.08 70);
+  --warn-border: oklch(0.78 0.11 82);
+  --safety-bg: oklch(0.96 0.03 27);
+  --safety-fg: oklch(0.42 0.17 27);
+  --neutral-note-bg: oklch(0.96 0.003 255);
+  --neutral-note-border: oklch(0.86 0.006 255);
+  --offline-bg: oklch(0.93 0.01 255);
+  --citation-bg: oklch(0.95 0.02 255);
+  --citation-fg: oklch(0.34 0.07 255);
+}
+
+.dark {
+  --background: oklch(0.17 0.005 255);
+  --foreground: oklch(0.97 0 0);
+
+  --card: oklch(0.22 0.006 255);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.22 0.006 255);
+  --popover-foreground: oklch(0.97 0 0);
+
+  --primary: oklch(0.72 0.13 250);
+  --primary-foreground: oklch(0.17 0.02 255);
+
+  --secondary: oklch(0.28 0.015 255);
+  --secondary-foreground: oklch(0.97 0 0);
+
+  --muted: oklch(0.27 0.01 255);
+  --muted-foreground: oklch(0.76 0 0);
+
+  --accent: oklch(0.3 0.025 255);
+  --accent-foreground: oklch(0.97 0 0);
+
+  --destructive: oklch(0.68 0.18 25);
+  --destructive-foreground: oklch(0.17 0 0);
+
+  --border: oklch(0.33 0.008 255);
+  --input: oklch(0.38 0.008 255);
+  --ring: oklch(0.72 0.13 250);
+
+  --answer-fg: oklch(0.97 0 0);
+  --warn-bg: oklch(0.3 0.05 80);
+  --warn-fg: oklch(0.92 0.08 88);
+  --warn-border: oklch(0.45 0.09 82);
+  --safety-bg: oklch(0.3 0.07 25);
+  --safety-fg: oklch(0.9 0.09 30);
+  --neutral-note-bg: oklch(0.24 0.008 255);
+  --neutral-note-border: oklch(0.34 0.01 255);
+  --offline-bg: oklch(0.28 0.012 255);
+  --citation-bg: oklch(0.3 0.03 255);
+  --citation-fg: oklch(0.86 0.06 250);
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  /* §1: 17px body floor, 20px answer steps. Nothing smaller than 15px ships. */
+  --text-micro: 0.9375rem; /* 15px — absolute floor, chips and meta only */
+  --text-body: 1.0625rem; /* 17px */
+  --text-step: 1.25rem; /* 20px */
+  --text-lead: 1.375rem; /* 22px */
+  --text-title: 1.75rem; /* 28px */
+
+  --text-micro--line-height: 1.4;
+  --text-body--line-height: 1.55;
+  --text-step--line-height: 1.6;
+  --text-lead--line-height: 1.4;
+  --text-title--line-height: 1.2;
+
+  /* §1: 56px minimum touch target. Gloves do not get smaller. */
+  --spacing-touch: 3.5rem;
+  --spacing-touch-lg: 4.5rem;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-answer-fg: var(--answer-fg);
+  --color-warn-bg: var(--warn-bg);
+  --color-warn-fg: var(--warn-fg);
+  --color-warn-border: var(--warn-border);
+  --color-safety-bg: var(--safety-bg);
+  --color-safety-fg: var(--safety-fg);
+  --color-neutral-note-bg: var(--neutral-note-bg);
+  --color-neutral-note-border: var(--neutral-note-border);
+  --color-offline-bg: var(--offline-bg);
+  --color-citation-bg: var(--citation-bg);
+  --color-citation-fg: var(--citation-fg);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    /* Stops iOS zooming the layout when a technician rotates the phone. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    /* Safe areas: the push-to-talk button sits above the home indicator. */
+    padding-bottom: env(safe-area-inset-bottom);
+    overscroll-behavior-y: none;
+  }
+
+  /* §10: every interactive element has a visible focus ring. Technicians do
+     use Bluetooth keyboards on bench work. */
+  :focus-visible {
+    @apply ring-ring outline-none ring-[3px] ring-offset-2 ring-offset-background;
+  }
+
+  /* No hover-only affordances (§1). Hover styling is opt-in per component and
+     only ever additive to a state already visible without a pointer. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
