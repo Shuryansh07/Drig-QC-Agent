@@ -6,3 +6,9 @@ node_modules/
 
 # Prisma generated client
 /generated/prisma/
+
+# Runtime logs
+/logs/
+
+# Temporary upload files (deleted after processing; see upload.middleware.js)
+/.tmp/
