@@ -77,7 +77,9 @@ model DocumentPage {
   id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   documentId          String    @map("document_id") @db.Uuid
   pageNumber          Int       @map("page_number")
-  // pending | processing | vision_processing | vision_completed | embedding | completed | failed
+  // pending | processing | embedding | completed | failed
+  // (vision_processing | vision_completed no longer produced — Vision LLM
+  // processing was removed; kept as valid historical values only.)
   status              String    @default("pending")
   retryCount          Int       @default(0) @map("retry_count")
   lastError           String?   @map("last_error")

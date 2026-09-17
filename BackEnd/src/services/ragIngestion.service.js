@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { prisma } from "../config/prisma.js";
 import { parsePdfPages } from "./pdf.service.js";
-import { analyzePage } from "./vision.service.js";
 import { generateEmbeddings, toVectorLiteral } from "./embedding.service.js";
 import { uploadOriginalPdf } from "./workdrive.service.js";
 import { createJob } from "./jobQueue.service.js";
@@ -11,32 +10,78 @@ import { logger } from "../utils/logger.js";
 
 const MAX_CHUNK_CHARS = 1400;
 const CHUNK_OVERLAP = 150;
-// Pages are Vision LLM + embedding calls — network-bound. Processing them in
+// Pages are embedding calls — network-bound. Processing them in
 // bounded-concurrency batches instead of one at a time cuts wall-clock time.
 // This bounds how many pages of ONE document are started at once; the
-// separate global vision/embedding limiters (concurrencyLimiter.js) bound
-// the actual API call concurrency across ALL documents a worker is running.
+// separate global embedding limiter (concurrencyLimiter.js) bounds the
+// actual API call concurrency across ALL documents a worker is running.
 const PAGE_CONCURRENCY = parseInt(process.env.PAGE_CONCURRENCY || "3", 10);
 
-// Vision LLM output for a page is usually one chunk. Only split when a page's
-// processed content is long enough to benefit from smaller, more targeted chunks.
-const chunkContent = (content) => {
-  if (content.length <= MAX_CHUNK_CHARS) {
-    return [content];
-  }
+// A page's extracted text is usually one chunk. Only split when it's long
+// enough to benefit from smaller, more targeted chunks.
+//
+// Recursive splitting: tries paragraph breaks first, then line breaks, then
+// sentence breaks, then word breaks — only falling back to a hard character
+// cut if none of those get a piece under the limit (in practice, never).
+// This keeps chunk boundaries at natural text boundaries instead of landing
+// mid-sentence, while still applying the same overlap as before for
+// continuity between adjacent chunks.
+const CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " "];
 
+const hardSlice = (text) => {
   const chunks = [];
   let start = 0;
-
-  while (start < content.length) {
-    const end = Math.min(start + MAX_CHUNK_CHARS, content.length);
-    chunks.push(content.slice(start, end).trim());
-    if (end === content.length) break;
+  while (start < text.length) {
+    const end = Math.min(start + MAX_CHUNK_CHARS, text.length);
+    chunks.push(text.slice(start, end).trim());
+    if (end === text.length) break;
     start = end - CHUNK_OVERLAP;
   }
-
   return chunks.filter(Boolean);
 };
+
+const mergeSplits = (splits, separator) => {
+  const chunks = [];
+  let current = "";
+
+  for (const piece of splits) {
+    const candidate = current ? current + separator + piece : piece;
+    if (candidate.length <= MAX_CHUNK_CHARS) {
+      current = candidate;
+    } else {
+      if (current) chunks.push(current);
+      // Carry the tail of the previous chunk forward so adjacent chunks
+      // still overlap, same as the old hard-slice approach.
+      const tail = current.slice(-CHUNK_OVERLAP);
+      const candidateWithTail = tail ? tail + separator + piece : piece;
+      current = candidateWithTail.length <= MAX_CHUNK_CHARS ? candidateWithTail : piece;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+};
+
+const recursiveSplit = (text, separators) => {
+  if (text.length <= MAX_CHUNK_CHARS) return [text];
+
+  const [separator, ...remaining] = separators;
+  if (separator === undefined) return hardSlice(text);
+
+  const splits = text.split(separator).filter((s) => s.length > 0);
+  const merged = mergeSplits(splits, separator);
+
+  const result = [];
+  for (const piece of merged) {
+    if (piece.length > MAX_CHUNK_CHARS) {
+      result.push(...recursiveSplit(piece, remaining));
+    } else {
+      result.push(piece);
+    }
+  }
+  return result;
+};
+
+const chunkContent = (content) => recursiveSplit(content, CHUNK_SEPARATORS).filter(Boolean);
 
 const deleteTempFile = async (filePath, log) => {
   if (!filePath) return;
@@ -51,10 +96,13 @@ const deleteTempFile = async (filePath, log) => {
 /**
  * Processes ONE page against its persisted document_pages state, skipping
  * whatever's already done:
- *  - Vision already succeeded (vision_content persisted) -> reuse it, no new call.
  *  - Embedding already completed -> page is done, nothing to do.
  *  - Otherwise runs whichever steps are still needed and persists progress
  *    after EACH step succeeds, so a later failure doesn't lose earlier work.
+ *
+ * Vision LLM processing was deliberately removed — every page uses its raw
+ * extracted text directly, whether or not it has a visual. `hasVisual` is
+ * still recorded as informational metadata only.
  */
 const processPage = async ({ document, page, pageRow, customerId, fileName, log }) => {
   await prisma.documentPage.update({
@@ -63,31 +111,9 @@ const processPage = async ({ document, page, pageRow, customerId, fileName, log 
   });
 
   try {
-    let finalContent = pageRow.visionContent;
-
-    if (!finalContent) {
-      if (page.hasVisualContent && page.imageBuffer) {
-        await prisma.documentPage.update({ where: { id: pageRow.id }, data: { status: "vision_processing" } });
-        finalContent = await analyzePage({
-          fileName,
-          pageNumber: page.pageNumber,
-          pageText: page.text,
-          imageBuffer: page.imageBuffer,
-        });
-        // Persist immediately — if embedding fails next, a retry must NOT call Vision again.
-        await prisma.documentPage.update({
-          where: { id: pageRow.id },
-          data: { status: "vision_completed", visionProcessed: true, visionContent: finalContent, hasVisual: true },
-        });
-        log(`page ${page.pageNumber} has a visual -> Vision LLM completed`);
-      } else {
-        finalContent = page.text;
-        await prisma.documentPage.update({ where: { id: pageRow.id }, data: { hasVisual: false } });
-        log(`page ${page.pageNumber} is plain text -> Vision LLM skipped`);
-      }
-    } else {
-      log(`page ${page.pageNumber} already has a persisted Vision result -> Vision LLM skipped on retry`);
-    }
+    const finalContent = page.text;
+    await prisma.documentPage.update({ where: { id: pageRow.id }, data: { hasVisual: page.hasVisualContent } });
+    log(`page ${page.pageNumber}: using extracted text directly (Vision disabled)`);
 
     if (!finalContent || !finalContent.trim()) {
       await prisma.documentPage.update({
@@ -174,6 +200,20 @@ export const processDocument = async (document) => {
     parsePdfPages(buffer)
   );
   log(`pages detected: ${totalPages}`);
+
+  // TEMP DEBUG — shows exactly what parsePdfPages() returned for this
+  // upload. Remove once you've seen what you need.
+  console.log(`\n=== parsePdfPages() raw return — document ${document.id} ===`);
+  console.log("totalPages:", totalPages);
+  console.table(
+    pages.map((p) => ({
+      pageNumber: p.pageNumber,
+      textLength: p.text.length,
+      textPreview: p.text.slice(0, 70).replace(/\s+/g, " ") + (p.text.length > 70 ? "…" : ""),
+      hasVisualContent: p.hasVisualContent,
+    }))
+  );
+  console.log(`=== end parsePdfPages() output ===\n`);
 
   // Upsert is what makes this safe to call again on retry: existing rows
   // (and their progress) are left untouched, only missing ones are created.
