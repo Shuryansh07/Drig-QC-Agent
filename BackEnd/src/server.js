@@ -6,6 +6,7 @@ import documentRoutes from "./routes/document.routes.js";
 import ragRoutes from "./routes/rag.routes.js";
 import { getQueueStats } from "./services/jobQueue.service.js";
 import { logger } from "./utils/logger.js";
+import audioRoutes from "./routes/audio.routes.js";
 
 dotenv.config();
 
@@ -17,6 +18,7 @@ app.use(express.json());
 app.use("/api/pdf", pdfRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/rag", ragRoutes);
+app.use("/api/audio", audioRoutes);
 
 app.get("/", (req, res) => {
   res.json({
