@@ -61,6 +61,12 @@ export function TurnView({
         />
       ) : null}
 
+      {turn.durationMs !== undefined ? (
+        <p className="text-micro text-muted-foreground" role="status">
+          Answered in {turn.durationMs}ms
+        </p>
+      ) : null}
+
       {turn.gateOutcome === "answered" ? (
         <ResolutionBar value={turn.resolution} onChange={onResolution} />
       ) : null}

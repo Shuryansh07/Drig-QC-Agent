@@ -122,6 +122,8 @@ export interface Turn {
   conflict: ConflictInfo | null;
   resolution: Resolution | null;
   createdAt: string;
+  /** Wall-clock time (ms) from request sent to answer received. Agent turns only. */
+  durationMs?: number;
 }
 
 export interface Conversation {

@@ -4,28 +4,30 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "dev": "nodemon --exec tsx src/server.js",
+    "start": "tsx src/server.js",
+    "worker": "tsx src/worker.js",
+    "dev:worker": "nodemon --exec tsx src/worker.js",
+    "db:migrate": "node scripts/db-migrate.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@prisma/adapter-pg": "^7.10.0",
-    "@prisma/client": "^7.10.0",
-    "@supabase/server": "^1.6.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "multer": "^2.4.0",
     "openai": "^7.15.0",
     "pdf-parse": "^2.4.5",
-    "pg": "^8.23.0",
-    "prisma": "^7.10.0"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
-    "nodemon": "^3.1.14"
+    "@types/pg": "^8.11.10",
+    "nodemon": "^3.1.14",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
   }
 }
