@@ -1,34 +1,41 @@
-import { prisma } from "../config/prisma.js";
-import { generateEmbedding, toVectorLiteral } from "./embedding.service.js";
+import { generateEmbedding } from "./embedding.service.js";
+import { matchChunks } from "../db/retrieval.js";
+import { getChunksByIds } from "../db/chunks.js";
+import { getDefaultOrg } from "../db/org.js";
+import { getRetrievalMatchCount } from "../db/settings.js";
 import { withTiming } from "../utils/timing.js";
 
-const MATCH_COUNT = parseInt(process.env.RAG_MATCH_COUNT || "6", 10);
-
 /**
- * Embeds the question and runs a pgvector cosine-similarity search scoped to
- * customerId. This customer_id filter is applied in the database query
- * itself — never left to the caller/frontend to enforce.
+ * Embeds the question, runs match_chunks() (rule P5 — no raw `<=>` here),
+ * then fetches the matched chunks' text by id. match_chunks only ever
+ * returns is_live chunks for the current org (tenancy + liveness are hard
+ * filters inside the function itself, not applied by the caller).
  */
-export const retrieveRelevantChunks = async ({ customerId, question }) => {
+export const retrieveRelevantChunks = async ({ question }) => {
+  const { orgId } = await getDefaultOrg();
   const embedding = await generateEmbedding(question);
-  const vectorLiteral = toVectorLiteral(embedding);
+  const matchCount = await getRetrievalMatchCount();
 
-  const chunks = await withTiming("pgvector similarity search ($queryRaw)", () =>
-    prisma.$queryRaw`
-      SELECT
-        id,
-        document_id AS "documentId",
-        page_number AS "pageNumber",
-        chunk_index AS "chunkIndex",
-        content,
-        1 - (embedding <=> ${vectorLiteral}::vector) AS similarity
-      FROM document_chunks
-      WHERE customer_id = ${customerId}
-        AND embedding IS NOT NULL
-      ORDER BY embedding <=> ${vectorLiteral}::vector
-      LIMIT ${MATCH_COUNT}
-    `
+  const matches = await withTiming("match_chunks()", () =>
+    matchChunks({ orgId, queryEmbedding: embedding, queryText: question, matchCount })
   );
 
-  return chunks;
+  if (matches.length === 0) return [];
+
+  const texts = await getChunksByIds(matches.map((m) => m.chunkId));
+  const textByChunkId = new Map(texts.map((t) => [t.chunkId, t]));
+
+  return matches
+    .map((m) => {
+      const text = textByChunkId.get(m.chunkId);
+      if (!text) return null;
+      return {
+        chunkId: m.chunkId,
+        documentId: m.docId,
+        pageNumber: text.pageFrom,
+        content: text.content,
+        similarity: m.denseSimilarity,
+      };
+    })
+    .filter(Boolean);
 };

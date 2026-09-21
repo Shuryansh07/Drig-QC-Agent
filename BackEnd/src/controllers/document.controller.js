@@ -1,5 +1,7 @@
 import { enqueueIngestion, enqueueRetry } from "../services/ragIngestion.service.js";
-import { prisma } from "../config/prisma.js";
+import * as documents from "../db/documents.js";
+import * as documentPages from "../db/documentPages.js";
+import { findLatestJobForDoc } from "../db/jobs.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -17,16 +19,11 @@ export const uploadDocument = async (req, res) => {
       });
     }
 
-    const customerId = req.body?.customer_id || "default";
-
-    logger.info(
-      `[upload] received "${req.file.originalname}" (${req.file.size} bytes, customer: ${customerId})`
-    );
+    logger.info(`[upload] received "${req.file.originalname}" (${req.file.size} bytes)`);
 
     const result = await enqueueIngestion({
       filePath: req.file.path,
       fileName: req.file.originalname,
-      customerId,
     });
 
     logger.info(`[upload] acknowledged in ${Date.now() - requestStart}ms`);
@@ -36,7 +33,7 @@ export const uploadDocument = async (req, res) => {
         document_id: result.documentId,
         status: result.status,
         duplicate: true,
-        message: "Identical file already ingested for this customer — reusing existing document",
+        message: "Identical file already ingested — reusing existing document",
       });
     }
 
@@ -58,8 +55,8 @@ export const uploadDocument = async (req, res) => {
 
 /**
  * Fast path: enqueues another process_document job and returns immediately.
- * The worker's job runner skips whatever already succeeded (persisted
- * Vision output, completed pages, an existing workdrive_file_id).
+ * The worker's job runner skips whatever already succeeded (completed
+ * pages, an existing WorkDrive external_ref).
  */
 export const retryDocumentController = async (req, res) => {
   const requestStart = Date.now();
@@ -90,43 +87,38 @@ export const retryDocumentController = async (req, res) => {
 
 /**
  * GET /api/documents/:id/status — lets a client poll progress instead of
- * holding a connection open. Pulls document + page-count breakdown + the
- * latest job's state.
+ * holding a connection open. Pulls document + page-count breakdown.
  */
 export const getDocumentStatus = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const document = await prisma.document.findUnique({ where: { id } });
+    const document = await documents.findById(id);
     if (!document) {
       return res.status(404).json({ success: false, message: "Document not found" });
     }
 
-    const pageStatusCounts = await prisma.documentPage.groupBy({
-      by: ["status"],
-      where: { documentId: id },
-      _count: true,
-    });
-
-    const latestJob = await prisma.job.findFirst({
-      where: { documentId: id },
-      orderBy: { createdAt: "desc" },
-    });
+    const pages = await documentPages.findPagesByDoc(id);
+    const pageStatusCounts = pages.reduce((acc, p) => {
+      acc[p.status] = (acc[p.status] || 0) + 1;
+      return acc;
+    }, {});
 
     const totalPages = document.pageCount ?? 0;
     const processedPages = document.processedPages ?? 0;
     const progressPercent = totalPages > 0 ? Math.round((processedPages / totalPages) * 100) : 0;
+    const latestJob = await findLatestJobForDoc(id);
 
     return res.status(200).json({
-      document_id: document.id,
-      status: document.status,
+      document_id: document.docId,
+      status: document.ingestStatus,
       total_pages: document.pageCount,
       processed_pages: document.processedPages,
       failed_pages: document.failedPages,
       progress_percent: progressPercent,
-      workdrive_file_id: document.workdriveFileId,
+      workdrive_file_id: document.externalRef?.startsWith("upload:") ? null : document.externalRef,
       error_message: document.errorMessage,
-      page_status_breakdown: Object.fromEntries(pageStatusCounts.map((r) => [r.status, r._count])),
+      page_status_breakdown: pageStatusCounts,
       job: latestJob
         ? {
             id: latestJob.id,

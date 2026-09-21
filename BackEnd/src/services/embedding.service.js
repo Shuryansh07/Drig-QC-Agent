@@ -2,6 +2,7 @@ import { getOpenAIClient } from "../config/openaiClient.js";
 import { withTiming } from "../utils/timing.js";
 import { embeddingLimiter } from "../utils/concurrencyLimiter.js";
 import { retryWithBackoff } from "../utils/retry.js";
+import { toVectorLiteral as vectorLiteral, EMBEDDING_DIMENSIONS as VECTOR_DIMENSIONS } from "../db/vector.js";
 
 const EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
 const EMBEDDING_TIMEOUT_MS = parseInt(process.env.EMBEDDING_TIMEOUT_MS || "30000", 10);
@@ -13,10 +14,10 @@ const EMBEDDING_MAX_RETRIES = parseInt(process.env.EMBEDDING_MAX_RETRIES || "5",
 // rather than one unbounded request.
 const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || "20", 10);
 
-// Must match the pgvector column dimension (vector(1536) in the migration).
+// Must match the pgvector column dimension (vector(1536) in db/migrations).
 // If you change OPENAI_EMBEDDING_MODEL to one with a different output size,
 // update EMBEDDING_DIMENSIONS *and* run a migration to alter the column/index.
-export const EMBEDDING_DIMENSIONS = parseInt(process.env.EMBEDDING_DIMENSIONS || "1536", 10);
+export const EMBEDDING_DIMENSIONS = VECTOR_DIMENSIONS;
 
 const validate = (embedding, index) => {
   if (!embedding || embedding.length !== EMBEDDING_DIMENSIONS) {
@@ -80,4 +81,6 @@ export const generateEmbedding = async (text) => {
 };
 
 // pgvector text input format for casting a parameter to ::vector in raw SQL.
-export const toVectorLiteral = (embedding) => `[${embedding.join(",")}]`;
+// Delegates to src/db/vector.ts (the single place this is implemented) so
+// the dimension assertion always runs.
+export const toVectorLiteral = vectorLiteral;

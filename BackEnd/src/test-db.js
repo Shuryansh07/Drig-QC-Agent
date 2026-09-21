@@ -1,13 +1,12 @@
 import "dotenv/config";
-import { prisma } from "./config/prisma.js";
+import { pool } from "./db/pool.js";
 
 try {
-  await prisma.$queryRaw`SELECT 1`;
-
-  console.log("Database connection successful");
+  const { rows } = await pool.query("select 1 as ok");
+  console.log("Database connection successful:", rows[0]);
 } catch (error) {
   console.error("Database connection failed:");
   console.error(error);
 } finally {
-  await prisma.$disconnect();
+  await pool.end();
 }

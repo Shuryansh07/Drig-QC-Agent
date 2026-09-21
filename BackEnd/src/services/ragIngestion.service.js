@@ -1,12 +1,15 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-import { prisma } from "../config/prisma.js";
 import { parsePdfPages } from "./pdf.service.js";
-import { generateEmbeddings, toVectorLiteral } from "./embedding.service.js";
+import { generateEmbeddings } from "./embedding.service.js";
 import { uploadOriginalPdf } from "./workdrive.service.js";
-import { createJob } from "./jobQueue.service.js";
 import { withTiming } from "../utils/timing.js";
 import { logger } from "../utils/logger.js";
+import * as documents from "../db/documents.js";
+import * as documentPages from "../db/documentPages.js";
+import * as chunks from "../db/chunks.js";
+import * as jobs from "../db/jobs.js";
+import { publishDocumentVersion } from "../db/ingestion.js";
 
 const MAX_CHUNK_CHARS = 1400;
 const CHUNK_OVERLAP = 150;
@@ -29,19 +32,19 @@ const PAGE_CONCURRENCY = parseInt(process.env.PAGE_CONCURRENCY || "3", 10);
 const CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " "];
 
 const hardSlice = (text) => {
-  const chunks = [];
+  const result = [];
   let start = 0;
   while (start < text.length) {
     const end = Math.min(start + MAX_CHUNK_CHARS, text.length);
-    chunks.push(text.slice(start, end).trim());
+    result.push(text.slice(start, end).trim());
     if (end === text.length) break;
     start = end - CHUNK_OVERLAP;
   }
-  return chunks.filter(Boolean);
+  return result.filter(Boolean);
 };
 
 const mergeSplits = (splits, separator) => {
-  const chunks = [];
+  const result = [];
   let current = "";
 
   for (const piece of splits) {
@@ -49,7 +52,7 @@ const mergeSplits = (splits, separator) => {
     if (candidate.length <= MAX_CHUNK_CHARS) {
       current = candidate;
     } else {
-      if (current) chunks.push(current);
+      if (current) result.push(current);
       // Carry the tail of the previous chunk forward so adjacent chunks
       // still overlap, same as the old hard-slice approach.
       const tail = current.slice(-CHUNK_OVERLAP);
@@ -57,8 +60,8 @@ const mergeSplits = (splits, separator) => {
       current = candidateWithTail.length <= MAX_CHUNK_CHARS ? candidateWithTail : piece;
     }
   }
-  if (current) chunks.push(current);
-  return chunks;
+  if (current) result.push(current);
+  return result;
 };
 
 const recursiveSplit = (text, separators) => {
@@ -94,82 +97,57 @@ const deleteTempFile = async (filePath, log) => {
 };
 
 /**
- * Processes ONE page against its persisted document_pages state, skipping
+ * Processes ONE page against its persisted kb_document_page state, skipping
  * whatever's already done:
  *  - Embedding already completed -> page is done, nothing to do.
  *  - Otherwise runs whichever steps are still needed and persists progress
  *    after EACH step succeeds, so a later failure doesn't lose earlier work.
- *
- * Vision LLM processing was deliberately removed — every page uses its raw
- * extracted text directly, whether or not it has a visual. `hasVisual` is
- * still recorded as informational metadata only.
  */
-const processPage = async ({ document, page, pageRow, customerId, fileName, log }) => {
-  await prisma.documentPage.update({
-    where: { id: pageRow.id },
-    data: { status: "processing", startedAt: pageRow.startedAt ?? new Date() },
-  });
+const processPage = async ({ docId, page, pageRow, fileName, log }) => {
+  await documentPages.updatePage(pageRow.id, { status: "processing", startedAt: pageRow.startedAt ?? new Date() });
 
   try {
     const finalContent = page.text;
-    await prisma.documentPage.update({ where: { id: pageRow.id }, data: { hasVisual: page.hasVisualContent } });
+    await documentPages.updatePage(pageRow.id, { hasVisual: page.hasVisualContent });
     log(`page ${page.pageNumber}: using extracted text directly (Vision disabled)`);
 
     if (!finalContent || !finalContent.trim()) {
-      await prisma.documentPage.update({
-        where: { id: pageRow.id },
-        data: { status: "completed", embeddingCompleted: true, completedAt: new Date() },
-      });
+      await documentPages.updatePage(pageRow.id, { status: "completed", embeddingCompleted: true, completedAt: new Date() });
       log(`page ${page.pageNumber} has no extractable content -> skipped`);
       return { chunksCreated: 0 };
     }
 
     if (pageRow.embeddingCompleted) {
       log(`page ${page.pageNumber} already embedded -> skipped on retry`);
-      return { chunksCreated: await prisma.documentChunk.count({ where: { documentId: document.id, pageNumber: page.pageNumber } }) };
+      return { chunksCreated: await chunks.countChunksForPage(docId, page.pageNumber) };
     }
 
-    await prisma.documentPage.update({ where: { id: pageRow.id }, data: { status: "embedding" } });
+    await documentPages.updatePage(pageRow.id, { status: "embedding" });
 
     const contentChunks = chunkContent(finalContent);
     const embeddings = await generateEmbeddings(contentChunks);
 
-    await Promise.all(
-      contentChunks.map((chunkText, i) =>
-        prisma.$executeRaw`
-          INSERT INTO document_chunks
-            (document_id, customer_id, page_number, chunk_index, content, metadata, embedding)
-          VALUES
-            (${document.id}::uuid, ${customerId}, ${page.pageNumber}, ${i}, ${chunkText},
-             ${JSON.stringify({ sourceFile: fileName, hadVisual: page.hasVisualContent })}::jsonb,
-             ${toVectorLiteral(embeddings[i])}::vector)
-          ON CONFLICT (document_id, page_number, chunk_index)
-          DO UPDATE SET content = EXCLUDED.content, metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding
-        `
-      )
+    await chunks.upsertChunks(
+      docId,
+      contentChunks.map((chunkText, i) => ({
+        pageNumber: page.pageNumber,
+        chunkIndex: i,
+        content: chunkText,
+        embedding: embeddings[i],
+        metadata: { sourceFile: fileName, hadVisual: page.hasVisualContent },
+      }))
     );
     log(`page ${page.pageNumber}: ${contentChunks.length} chunk(s) embedded + stored`);
 
-    await prisma.documentPage.update({
-      where: { id: pageRow.id },
-      data: { status: "completed", embeddingCompleted: true, completedAt: new Date() },
-    });
+    await documentPages.updatePage(pageRow.id, { status: "completed", embeddingCompleted: true, completedAt: new Date() });
 
     return { chunksCreated: contentChunks.length };
   } catch (err) {
     // Previously silent — a page failure only showed up if you queried
-    // document_pages directly. Now visible in the live log stream too,
+    // kb_document_page directly. Now visible in the live log stream too,
     // with the page number and full provider error attached.
-    logger.error(`[ingest ${document.id}] page ${page.pageNumber} failed`, err);
-
-    await prisma.documentPage.update({
-      where: { id: pageRow.id },
-      data: {
-        status: "failed",
-        retryCount: { increment: 1 },
-        lastError: (err.message || "Unknown page error").slice(0, 500),
-      },
-    });
+    logger.error(`[ingest ${docId}] page ${page.pageNumber} failed`, err);
+    await documentPages.incrementRetryCount(pageRow.id, (err.message || "Unknown page error").slice(0, 500));
     throw err;
   }
 };
@@ -178,56 +156,32 @@ const processPage = async ({ document, page, pageRow, customerId, fileName, log 
  * The actual work — called ONLY by the worker (src/worker.js), never
  * synchronously from an HTTP handler. Runs RAG processing (pages not yet
  * completed) + WorkDrive archival (only if not already done) for a
- * document, and finalizes its status. Shared by both a fresh upload's job
- * and a retry's job — the only difference is whether document_pages rows
- * already exist and are (partially) completed; the upsert + skip-completed
- * logic below handles both uniformly.
+ * document, publishes it once chunks exist, and finalizes its status.
+ * Shared by both a fresh upload's job and a retry's job.
  */
 export const processDocument = async (document) => {
-  const log = (msg) => logger.info(`[ingest ${document.id}] ${msg}`);
+  const log = (msg) => logger.info(`[ingest ${document.docId}] ${msg}`);
   const documentStart = Date.now();
 
   if (!document.tempFilePath) {
-    throw new Error(`Document ${document.id} has no tempFilePath — cannot process without the original bytes`);
+    throw new Error(`Document ${document.docId} has no tempFilePath — cannot process without the original bytes`);
   }
 
   const buffer = await fs.readFile(document.tempFilePath);
-  const fileName = document.fileName;
+  const fileName = document.title;
 
-  await prisma.document.update({ where: { id: document.id }, data: { status: "rag_processing" } });
+  await documents.updateIngestState(document.docId, { ingestStatus: "rag_processing" });
 
-  const { totalPages, pages } = await withTiming(`[ingest ${document.id}] parsePdfPages (total)`, () =>
+  const { totalPages, pages } = await withTiming(`[ingest ${document.docId}] parsePdfPages (total)`, () =>
     parsePdfPages(buffer)
   );
   log(`pages detected: ${totalPages}`);
 
-  // TEMP DEBUG — shows exactly what parsePdfPages() returned for this
-  // upload. Remove once you've seen what you need.
-  console.log(`\n=== parsePdfPages() raw return — document ${document.id} ===`);
-  console.log("totalPages:", totalPages);
-  console.table(
-    pages.map((p) => ({
-      pageNumber: p.pageNumber,
-      textLength: p.text.length,
-      textPreview: p.text.slice(0, 70).replace(/\s+/g, " ") + (p.text.length > 70 ? "…" : ""),
-      hasVisualContent: p.hasVisualContent,
-    }))
-  );
-  console.log(`=== end parsePdfPages() output ===\n`);
-
   // Upsert is what makes this safe to call again on retry: existing rows
   // (and their progress) are left untouched, only missing ones are created.
-  await Promise.all(
-    pages.map((page) =>
-      prisma.documentPage.upsert({
-        where: { documentId_pageNumber: { documentId: document.id, pageNumber: page.pageNumber } },
-        create: { documentId: document.id, pageNumber: page.pageNumber, status: "pending" },
-        update: {},
-      })
-    )
-  );
+  await documentPages.ensurePages(document.docId, pages.map((p) => p.pageNumber));
 
-  const existingPageRows = await prisma.documentPage.findMany({ where: { documentId: document.id } });
+  const existingPageRows = await documentPages.findPagesByDoc(document.docId);
   const pageRowByNumber = new Map(existingPageRows.map((r) => [r.pageNumber, r]));
   const pagesToProcess = pages.filter((p) => pageRowByNumber.get(p.pageNumber)?.status !== "completed");
 
@@ -237,12 +191,11 @@ export const processDocument = async (document) => {
     const batch = pagesToProcess.slice(i, i + PAGE_CONCURRENCY);
     await Promise.allSettled(
       batch.map((page) =>
-        withTiming(`[ingest ${document.id}] page ${page.pageNumber} TOTAL`, () =>
+        withTiming(`[ingest ${document.docId}] page ${page.pageNumber} TOTAL`, () =>
           processPage({
-            document,
+            docId: document.docId,
             page,
             pageRow: pageRowByNumber.get(page.pageNumber),
-            customerId: document.customerId,
             fileName,
             log,
           })
@@ -251,22 +204,34 @@ export const processDocument = async (document) => {
     );
   }
 
-  const finalPageRows = await prisma.documentPage.findMany({ where: { documentId: document.id } });
+  const finalPageRows = await documentPages.findPagesByDoc(document.docId);
   const completedPages = finalPageRows.filter((r) => r.status === "completed");
   const failedPages = finalPageRows.filter((r) => r.status === "failed");
-  const chunksCreated = await prisma.documentChunk.count({ where: { documentId: document.id } });
+  const chunksCreated = await chunks.countChunks(document.docId);
+
+  // Only published (is_live) chunks are searchable (DATABASE.md §4/§6.1) —
+  // publish as soon as there's anything to publish, even on a partial
+  // (completed_with_errors) run, so the pages that DID succeed are usable.
+  if (chunksCreated > 0) {
+    await publishDocumentVersion(document.docId, 1);
+    log(`published version 1 (${chunksCreated} chunks live)`);
+  }
 
   // WorkDrive only after RAG processing, and only if not already archived —
-  // a retry with workdriveFileId already set skips straight past this.
-  let workdriveFileId = document.workdriveFileId;
+  // a retry with an external_ref already set skips straight past this.
+  let workdriveFileId = document.externalRef?.startsWith("upload:") ? null : document.externalRef;
   if (!workdriveFileId && completedPages.length > 0) {
-    await prisma.document.update({ where: { id: document.id }, data: { status: "workdrive_uploading" } });
+    await documents.updateIngestState(document.docId, { ingestStatus: "workdrive_uploading" });
     try {
-      const result = await uploadOriginalPdf(buffer, fileName, document.id);
+      const result = await uploadOriginalPdf(buffer, fileName, document.docId);
       workdriveFileId = result.workdriveFileId;
+      await documents.updateIngestState(document.docId, {
+        externalRef: workdriveFileId,
+        workdriveFolderId: result.workdriveFolderId,
+      });
       log(`WorkDrive upload complete -> ${workdriveFileId}`);
     } catch (err) {
-      logger.error(`[ingest ${document.id}] WorkDrive upload failed (non-fatal, retryable)`, err);
+      logger.error(`[ingest ${document.docId}] WorkDrive upload failed (non-fatal, retryable)`, err);
     }
   } else if (workdriveFileId) {
     log(`WorkDrive already archived (${workdriveFileId}) -> skipped`);
@@ -286,28 +251,20 @@ export const processDocument = async (document) => {
   // Temp file is only safe to delete once there is NO remaining retryable
   // work that could need the original bytes: fully completed (no failed
   // pages, WorkDrive succeeded), or a fatal failure with nothing to retry.
-  // `completed_with_errors` (some pages still failed) and `rag_completed`
-  // (WorkDrive still pending) both keep the file — either could still need
-  // it on a future retry.
   const canDeleteTempFile = status === "completed" || status === "failed";
 
-  await prisma.document.update({
-    where: { id: document.id },
-    data: {
-      status,
-      pageCount: totalPages,
-      processedPages: completedPages.length,
-      failedPages: failedPages.length,
-      workdriveFileId,
-      workdriveFolderId: workdriveFileId ? process.env.WORKDRIVE_FOLDER_ID : null,
-      tempFilePath: canDeleteTempFile ? null : document.tempFilePath,
-      errorMessage:
-        failedPages.length > 0
-          ? `Failed page(s): ${failedPages.map((p) => p.pageNumber).join(", ")}`
-          : !workdriveFileId
-            ? "WorkDrive upload pending/failed — retry to complete archival"
-            : null,
-    },
+  await documents.updateIngestState(document.docId, {
+    ingestStatus: status,
+    pageCount: totalPages,
+    processedPages: completedPages.length,
+    failedPages: failedPages.length,
+    tempFilePath: canDeleteTempFile ? null : document.tempFilePath,
+    errorMessage:
+      failedPages.length > 0
+        ? `Failed page(s): ${failedPages.map((p) => p.pageNumber).join(", ")}`
+        : !workdriveFileId
+          ? "WorkDrive upload pending/failed — retry to complete archival"
+          : null,
   });
 
   if (canDeleteTempFile) {
@@ -327,7 +284,7 @@ export const processDocument = async (document) => {
   // on. Only genuinely unexpected exceptions (caught by the worker) mark the
   // job itself failed; this function returning normally always means "the
   // document's state was correctly persisted," regardless of which status.
-  return { documentId: document.id, status, pagesProcessed: completedPages.length, totalPages, chunksCreated, failedPages: failedPages.map((p) => p.pageNumber), workdriveFileId };
+  return { docId: document.docId, status, pagesProcessed: completedPages.length, totalPages, chunksCreated, failedPages: failedPages.map((p) => p.pageNumber), workdriveFileId };
 };
 
 /**
@@ -337,43 +294,26 @@ export const processDocument = async (document) => {
  * later in the worker. This is what lets POST /api/documents/upload return
  * 202 immediately regardless of document size.
  */
-export const enqueueIngestion = async ({ filePath, fileName, customerId }) => {
-  const resolvedCustomerId = customerId || "default";
+export const enqueueIngestion = async ({ filePath, fileName }) => {
   const buffer = await fs.readFile(filePath);
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
 
-  // Dedup: identical bytes already fully ingested for this customer -> skip
-  // creating a new document/job entirely, no processing needed.
-  const existing = await prisma.document.findFirst({
-    where: { customerId: resolvedCustomerId, sha256, status: { in: ["completed", "completed_with_errors"] } },
-    orderBy: { createdAt: "desc" },
-  });
+  // Dedup: identical bytes already fully ingested -> skip creating a new
+  // document/job entirely, no processing needed.
+  const existing = await documents.findByContentHash(sha256);
 
   if (existing) {
-    logger.info(`[upload] duplicate (sha256 match) for customer ${resolvedCustomerId} -> reusing document ${existing.id}`);
+    logger.info(`[upload] duplicate (sha256 match) -> reusing document ${existing.docId}`);
     await deleteTempFile(filePath);
-    return {
-      documentId: existing.id,
-      status: existing.status,
-      duplicate: true,
-    };
+    return { documentId: existing.docId, status: existing.ingestStatus, duplicate: true };
   }
 
-  const document = await prisma.document.create({
-    data: {
-      fileName,
-      customerId: resolvedCustomerId,
-      sha256,
-      status: "queued",
-      tempFilePath: filePath,
-    },
-  });
+  const document = await documents.createDocument({ title: fileName, contentHash: sha256, tempFilePath: filePath });
+  const job = await jobs.createJob({ jobType: "process_document", docId: document.docId });
 
-  const job = await createJob({ jobType: "process_document", documentId: document.id });
+  logger.info(`[upload] document ${document.docId} queued (job ${job.id})`);
 
-  logger.info(`[upload] document ${document.id} queued (job ${job.id})`);
-
-  return { documentId: document.id, jobId: job.id, status: document.status };
+  return { documentId: document.docId, jobId: job.id, status: document.ingestStatus };
 };
 
 /**
@@ -382,8 +322,8 @@ export const enqueueIngestion = async ({ filePath, fileName, customerId }) => {
  * `process_document` job. Does NOT do any processing itself — the worker
  * picks it up and processDocument() skips whatever's already done.
  */
-export const enqueueRetry = async (documentId) => {
-  const document = await prisma.document.findUnique({ where: { id: documentId } });
+export const enqueueRetry = async (docId) => {
+  const document = await documents.findById(docId);
 
   if (!document) {
     const err = new Error("Document not found");
@@ -391,11 +331,11 @@ export const enqueueRetry = async (documentId) => {
     throw err;
   }
 
-  if (document.status === "completed") {
-    return { documentId, status: document.status, message: "Already completed — nothing to retry" };
+  if (document.ingestStatus === "completed") {
+    return { documentId: docId, status: document.ingestStatus, message: "Already completed — nothing to retry" };
   }
-  if (["queued", "processing", "rag_processing", "workdrive_uploading"].includes(document.status)) {
-    const err = new Error(`Document is currently ${document.status} — cannot retry concurrently`);
+  if (["queued", "processing", "rag_processing", "workdrive_uploading"].includes(document.ingestStatus)) {
+    const err = new Error(`Document is currently ${document.ingestStatus} — cannot retry concurrently`);
     err.status = 409;
     throw err;
   }
@@ -418,10 +358,10 @@ export const enqueueRetry = async (documentId) => {
     throw err;
   }
 
-  await prisma.document.update({ where: { id: document.id }, data: { status: "queued" } });
-  const job = await createJob({ jobType: "process_document", documentId: document.id });
+  await documents.updateIngestState(document.docId, { ingestStatus: "queued" });
+  const job = await jobs.createJob({ jobType: "process_document", docId: document.docId });
 
-  logger.info(`[retry] document ${document.id} re-queued (job ${job.id})`);
+  logger.info(`[retry] document ${document.docId} re-queued (job ${job.id})`);
 
-  return { documentId: document.id, jobId: job.id, status: "queued" };
+  return { documentId: document.docId, jobId: job.id, status: "queued" };
 };

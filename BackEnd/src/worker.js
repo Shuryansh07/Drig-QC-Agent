@@ -1,14 +1,17 @@
+// MUST be the first import — see the same note in server.js: db/pool.ts
+// reads DATABASE_URL eagerly at module-evaluation time, which happens
+// before any code in this file's own body (including a later dotenv.config()
+// call) runs.
+import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import dotenv from "dotenv";
-import { prisma } from "./config/prisma.js";
 import { logger } from "./utils/logger.js";
-import { claimNextJob, completeJob, failJob, recoverStaleJobs } from "./services/jobQueue.service.js";
+import { claimNextJob, completeJob, failJob, recoverStaleJobs } from "./db/jobs.js";
+import * as documents from "./db/documents.js";
 import { processDocument } from "./services/ragIngestion.service.js";
 import { TEMP_UPLOAD_DIR } from "./middleware/upload.middleware.js";
-
-dotenv.config();
+import { pool } from "./db/pool.js";
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const JOB_POLL_INTERVAL_MS = parseInt(process.env.JOB_POLL_INTERVAL_MS || "1000", 10);
@@ -33,22 +36,22 @@ const isRetryableError = (err) => {
 const runJob = async (job) => {
   activeJobs++;
   const start = Date.now();
-  logger.info(`[job ${job.id}] claimed by ${WORKER_ID} (type: ${job.jobType}, document: ${job.documentId}, attempt ${job.attempts}/${job.maxAttempts})`);
+  logger.info(`[job ${job.id}] claimed by ${WORKER_ID} (type: ${job.jobType}, document: ${job.docId}, attempt ${job.attempts}/${job.maxAttempts})`);
 
   try {
     if (job.jobType !== "process_document") {
       throw new Error(`Unknown job_type: ${job.jobType}`);
     }
-    if (!job.documentId) {
-      throw new Error(`Job ${job.id} has no documentId`);
+    if (!job.docId) {
+      throw new Error(`Job ${job.id} has no docId`);
     }
 
-    const document = await prisma.document.findUnique({ where: { id: job.documentId } });
+    const document = await documents.findById(job.docId);
     if (!document) {
-      throw new Error(`Document ${job.documentId} not found`);
+      throw new Error(`Document ${job.docId} not found`);
     }
 
-    logger.info(`[job ${job.id}] document processing started (file: ${document.fileName})`);
+    logger.info(`[job ${job.id}] document processing started (file: ${document.title})`);
     const result = await processDocument(document);
 
     await completeJob(job.id);
@@ -67,15 +70,12 @@ const runJob = async (job) => {
     // failure so it's visibly retryable via POST /:id/retry instead of
     // silently stuck.
     const permanentlyFailed = !retryable || job.attempts >= job.maxAttempts;
-    if (permanentlyFailed && job.documentId) {
-      await prisma.document.update({
-        where: { id: job.documentId },
-        data: {
-          status: "failed",
-          errorMessage: `Job failed permanently after ${job.attempts} attempt(s): ${(err.message || String(err)).slice(0, 400)}`,
-        },
+    if (permanentlyFailed && job.docId) {
+      await documents.updateIngestState(job.docId, {
+        ingestStatus: "failed",
+        errorMessage: `Job failed permanently after ${job.attempts} attempt(s): ${(err.message || String(err)).slice(0, 400)}`,
       });
-      logger.warn(`[job ${job.id}] document ${job.documentId} marked failed (job exhausted retries)`);
+      logger.warn(`[job ${job.id}] document ${job.docId} marked failed (job exhausted retries)`);
     }
   } finally {
     activeJobs--;
@@ -103,7 +103,7 @@ const pollLoop = async () => {
 /**
  * Deletes temp upload files nobody references: no document row points at
  * them (crashed before enqueueIngestion finished creating one), or the
- * owning document's tempFilePath was already cleared (fully done). Only
+ * owning document's temp_file_path was already cleared (fully done). Only
  * touches files older than 10 minutes so a file mid-upload right now is
  * never at risk.
  */
@@ -115,11 +115,8 @@ const cleanupOrphanedTempFiles = async () => {
     return;
   }
 
-  const referenced = new Set(
-    (await prisma.document.findMany({ where: { tempFilePath: { not: null } }, select: { tempFilePath: true } })).map(
-      (d) => d.tempFilePath
-    )
-  );
+  const { rows } = await pool.query(`select temp_file_path from kb_document_ingest_state where temp_file_path is not null`);
+  const referenced = new Set(rows.map((r) => r.temp_file_path));
 
   const TEN_MINUTES = 10 * 60 * 1000;
   let removed = 0;
@@ -148,7 +145,7 @@ const shutdown = async (signal) => {
   logger.info(`[worker] received ${signal} — waiting for ${inFlight.size} in-flight job(s) to finish before exiting`);
 
   await Promise.allSettled([...inFlight]);
-  await prisma.$disconnect();
+  await pool.end();
 
   logger.info("[worker] shutdown complete");
   process.exit(0);
@@ -163,14 +160,14 @@ const start = async () => {
       `stale timeout: ${STALE_JOB_TIMEOUT_MS}ms)`
   );
 
-  await recoverStaleJobs();
+  await recoverStaleJobs(STALE_JOB_TIMEOUT_MS);
   await cleanupOrphanedTempFiles();
 
   // Periodic sweep, not just at startup — a job can go stale at any point
   // during a long-running worker's life (e.g. the worker itself is killed
   // mid-job by an operator, not just at process start).
   setInterval(() => {
-    recoverStaleJobs().catch((err) => logger.error("[worker] periodic stale-job recovery failed", err));
+    recoverStaleJobs(STALE_JOB_TIMEOUT_MS).catch((err) => logger.error("[worker] periodic stale-job recovery failed", err));
   }, Math.min(STALE_JOB_TIMEOUT_MS, 5 * 60_000));
 
   await pollLoop();

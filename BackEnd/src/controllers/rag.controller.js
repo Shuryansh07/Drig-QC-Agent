@@ -5,19 +5,15 @@ import { logger } from "../utils/logger.js";
 export const queryRag = async (req, res) => {
   const requestStart = Date.now();
   try {
-    const { customer_id: customerId, question } = req.body || {};
-
-    // Optional, same default as the upload endpoint — pass a real customer_id
-    // once you actually have more than one tenant's documents in the table.
-    const resolvedCustomerId = customerId && typeof customerId === "string" ? customerId : "default";
+    const { question } = req.body || {};
 
     if (!question || typeof question !== "string" || !question.trim()) {
       return res.status(400).json({ success: false, message: "question is required" });
     }
 
-    logger.info(`[rag query] received: "${question}" (customer: ${resolvedCustomerId})`);
+    logger.info(`[rag query] received: "${question}"`);
 
-    const chunks = await retrieveRelevantChunks({ customerId: resolvedCustomerId, question });
+    const chunks = await retrieveRelevantChunks({ question });
     logger.info(`[rag query] retrieved ${chunks.length} chunk(s)`);
 
     const { answer, sources } = await generateAnswer({ question, chunks });

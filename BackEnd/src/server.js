@@ -1,14 +1,17 @@
+// MUST be the first import: ES modules evaluate every import's top-level
+// code (including src/db/pool.ts, which reads DATABASE_URL eagerly) before
+// this file's own body runs — a dotenv.config() call further down would be
+// too late. See BackEnd's earlier bug: pool.ts threw "DATABASE_URL is not
+// set" even with a populated .env, because it evaluated before dotenv did.
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import pdfRoutes from "./routes/pdf.routes.js";
 import documentRoutes from "./routes/document.routes.js";
 import ragRoutes from "./routes/rag.routes.js";
-import { getQueueStats } from "./services/jobQueue.service.js";
+import { getQueueStats } from "./db/jobs.js";
 import { logger } from "./utils/logger.js";
 import audioRoutes from "./routes/audio.routes.js";
-
-dotenv.config();
 
 const app = express();
 
