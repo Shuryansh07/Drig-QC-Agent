@@ -97,7 +97,7 @@ export default function RagSearchScreen() {
                 <div className="flex flex-wrap gap-2">
                   {data.sources.map((s, i) => (
                     <Badge key={`${s.document_id}-${s.page_number}-${i}`} variant="secondary">
-                      Page {s.page_number}
+                      {s.page_number !== null ? `Page ${s.page_number}` : (s.section_path?.split(" > ").pop() ?? "Document")}
                       <span className="text-muted-foreground ml-1 font-mono text-[10px]">
                         {s.document_id.slice(0, 8)}
                       </span>

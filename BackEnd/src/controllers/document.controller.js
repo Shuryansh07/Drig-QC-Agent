@@ -15,7 +15,7 @@ export const uploadDocument = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: "PDF file is required (multipart field name: file)",
+        message: "A PDF or Word (.docx) file is required (multipart field name: file)",
       });
     }
 
@@ -44,6 +44,11 @@ export const uploadDocument = async (req, res) => {
       message: "Document accepted for background processing",
     });
   } catch (error) {
+    // A rejected file (wrong type, contents don't match) is the client's mistake:
+    // say why, with the status the admin panel shows as-is.
+    if (error.status && error.status < 500) {
+      return res.status(error.status).json({ success: false, message: error.message });
+    }
     logger.error("Document upload error", error);
     return res.status(500).json({
       success: false,
@@ -82,6 +87,43 @@ export const retryDocumentController = async (req, res) => {
       success: false,
       message: error.message || "Failed to retry document",
     });
+  }
+};
+
+/**
+ * GET /api/documents — everything uploaded, newest first, with per-document
+ * progress and how many sections/chunks it was split into. Backs the admin
+ * panel, which polls this one endpoint instead of one status call per row.
+ */
+export const listDocumentsController = async (req, res) => {
+  try {
+    const rows = await documents.listDocuments();
+
+    return res.status(200).json({
+      documents: rows.map((d) => {
+        const total = d.pageCount ?? 0;
+        const processed = d.processedPages ?? 0;
+        return {
+          document_id: d.docId,
+          title: d.title,
+          status: d.ingestStatus,
+          total_pages: d.pageCount,
+          processed_pages: d.processedPages,
+          failed_pages: d.failedPages,
+          progress_percent: total > 0 ? Math.round((processed / total) * 100) : 0,
+          parent_chunks: d.parentChunks,
+          child_chunks: d.childChunks,
+          live_version: d.liveVersion,
+          archived: Boolean(d.externalRef && !d.externalRef.startsWith("upload:")),
+          error_message: d.errorMessage,
+          created_at: d.createdAt,
+          updated_at: d.updatedAt,
+        };
+      }),
+    });
+  } catch (error) {
+    logger.error("Document list error", error);
+    return res.status(500).json({ success: false, message: "Failed to list documents" });
   }
 };
 

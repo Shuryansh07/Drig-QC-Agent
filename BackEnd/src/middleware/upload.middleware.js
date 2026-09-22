@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import multer from "multer";
+import { kindOfFileName, extensionOfKind, unsupportedTypeMessage } from "../services/chunking/documentTypes.js";
 
-// Uploaded PDFs are streamed straight to disk instead of held fully in Node's
+// Uploaded files (PDF or Word .docx) are streamed straight to disk instead of held fully in Node's
 // memory — matters once files get larger than a few MB. The temp file is not
 // permanent storage: it's deleted once RAG processing + WorkDrive upload both
 // succeed (see ragIngestion.service.js), and any file that's still here after
@@ -24,7 +25,8 @@ fs.mkdirSync(TEMP_UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, TEMP_UPLOAD_DIR),
-  filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}.pdf`),
+  // Keep the real extension: the worker chooses its parser from it.
+  filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${extensionOfKind(kindOfFileName(file.originalname))}`),
 });
 
 const upload = multer({
@@ -32,11 +34,13 @@ const upload = multer({
   limits: {
     fileSize: 500 * 1024 * 1024, // 500 MB — raised now that files stream to disk, not RAM
   },
+  // By extension, not MIME type: browsers report Word files as several different
+  // types (or as octet-stream). The real contents are checked after upload.
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === "application/pdf") {
+    if (kindOfFileName(file.originalname)) {
       cb(null, true);
     } else {
-      cb(new Error("Only PDF files are allowed"));
+      cb(Object.assign(new Error(unsupportedTypeMessage(file.originalname)), { code: "UNSUPPORTED_FILE_TYPE" }));
     }
   },
 });
