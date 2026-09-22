@@ -5,6 +5,8 @@ import type { Resolution, ServerEvent } from "@/types/contracts";
 const emptyStream = {
   turnId: null,
   status: "idle",
+  stage: null,
+  slow: false,
   steps: [],
   partialText: "",
   citations: [],
@@ -43,6 +45,24 @@ const chatSlice = createSlice({
       Object.assign(state, emptyStream);
       state.status = "thinking";
       state.draft = "";
+    },
+
+    stageChanged(state, action: PayloadAction<"retrieving" | "generating">) {
+      state.stage = action.payload;
+    },
+
+    /** Answer text arriving token by token. Coalesced by the caller, one dispatch per frame. */
+    answerDelta(state, action: PayloadAction<string>) {
+      state.partialText += action.payload;
+      state.status = "streaming";
+      state.slow = false;
+    },
+
+    /** Nothing has come back for a while. Only meaningful before the first text. */
+    slowResponse(state) {
+      if (state.partialText.length === 0 && (state.status === "thinking" || state.status === "streaming")) {
+        state.slow = true;
+      }
     },
 
     /**

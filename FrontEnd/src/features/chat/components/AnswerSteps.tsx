@@ -38,7 +38,8 @@ export function AnswerSteps({
           .filter((c): c is Citation => Boolean(c));
 
         return (
-          <li key={step.n} className="grid grid-cols-[2.25rem_1fr] gap-x-4">
+          // minmax(0,1fr), not 1fr: a long citation chip must shrink and truncate, not widen the column past the screen.
+          <li key={step.n} className="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-x-4">
             <span
               className={cn(
                 "flex size-9 items-center justify-center rounded-lg text-step font-semibold tabular-nums",

@@ -4,7 +4,9 @@ import { embeddingLimiter } from "../utils/concurrencyLimiter.js";
 import { retryWithBackoff } from "../utils/retry.js";
 import { toVectorLiteral as vectorLiteral, EMBEDDING_DIMENSIONS as VECTOR_DIMENSIONS } from "../db/vector.js";
 
-const EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
+// Exported so stored chunks can record which model produced their vector;
+// stored vectors are only reused for the same model (DATABASE.md §8.10).
+export const EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
 const EMBEDDING_TIMEOUT_MS = parseInt(process.env.EMBEDDING_TIMEOUT_MS || "30000", 10);
 // Same reasoning as VISION_MAX_RETRIES in vision.service.js — a sustained
 // per-minute rate limit can outlast the OpenAI SDK's own short retry window.

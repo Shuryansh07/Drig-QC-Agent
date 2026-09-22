@@ -19,4 +19,5 @@ export const queryKeys = {
   handoffQueue: () => ["handoff", "queue"] as const,
   vehicleLookup: (q: string) => ["vehicle", "lookup", q] as const,
   recentVehicles: () => ["vehicle", "recent"] as const,
+  adminDocuments: () => ["admin", "documents"] as const,
 } as const;

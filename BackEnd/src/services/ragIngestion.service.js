@@ -1,8 +1,14 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-import { parsePdfPages } from "./pdf.service.js";
-import { generateEmbeddings } from "./embedding.service.js";
-import { uploadOriginalPdf } from "./workdrive.service.js";
+import { extractDocumentBlocks } from "./chunking/pdfStructure.js";
+import { extractDocxBlocks } from "./chunking/docxStructure.js";
+import { kindOfFileName, describeKind, bufferMatchesKind, unsupportedTypeMessage } from "./chunking/documentTypes.js";
+import { buildChunkTree } from "./chunking/chunker.js";
+import { enrichWithVisuals } from "./chunking/visualEnrichment.js";
+import * as figures from "../db/images.js";
+import { loadChunkParams } from "./chunking/params.js";
+import { generateEmbeddings, EMBEDDING_MODEL } from "./embedding.service.js";
+import { uploadOriginalFile } from "./workdrive.service.js";
 import { withTiming } from "../utils/timing.js";
 import { logger } from "../utils/logger.js";
 import * as documents from "../db/documents.js";
@@ -11,80 +17,13 @@ import * as chunks from "../db/chunks.js";
 import * as jobs from "../db/jobs.js";
 import { publishDocumentVersion } from "../db/ingestion.js";
 
-const MAX_CHUNK_CHARS = 1400;
-const CHUNK_OVERLAP = 150;
-// Pages are embedding calls — network-bound. Processing them in
-// bounded-concurrency batches instead of one at a time cuts wall-clock time.
-// This bounds how many pages of ONE document are started at once; the
-// separate global embedding limiter (concurrencyLimiter.js) bounds the
-// actual API call concurrency across ALL documents a worker is running.
-const PAGE_CONCURRENCY = parseInt(process.env.PAGE_CONCURRENCY || "3", 10);
-
-// A page's extracted text is usually one chunk. Only split when it's long
-// enough to benefit from smaller, more targeted chunks.
-//
-// Recursive splitting: tries paragraph breaks first, then line breaks, then
-// sentence breaks, then word breaks — only falling back to a hard character
-// cut if none of those get a piece under the limit (in practice, never).
-// This keeps chunk boundaries at natural text boundaries instead of landing
-// mid-sentence, while still applying the same overlap as before for
-// continuity between adjacent chunks.
-const CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " "];
-
-const hardSlice = (text) => {
-  const result = [];
-  let start = 0;
-  while (start < text.length) {
-    const end = Math.min(start + MAX_CHUNK_CHARS, text.length);
-    result.push(text.slice(start, end).trim());
-    if (end === text.length) break;
-    start = end - CHUNK_OVERLAP;
-  }
-  return result.filter(Boolean);
-};
-
-const mergeSplits = (splits, separator) => {
-  const result = [];
-  let current = "";
-
-  for (const piece of splits) {
-    const candidate = current ? current + separator + piece : piece;
-    if (candidate.length <= MAX_CHUNK_CHARS) {
-      current = candidate;
-    } else {
-      if (current) result.push(current);
-      // Carry the tail of the previous chunk forward so adjacent chunks
-      // still overlap, same as the old hard-slice approach.
-      const tail = current.slice(-CHUNK_OVERLAP);
-      const candidateWithTail = tail ? tail + separator + piece : piece;
-      current = candidateWithTail.length <= MAX_CHUNK_CHARS ? candidateWithTail : piece;
-    }
-  }
-  if (current) result.push(current);
-  return result;
-};
-
-const recursiveSplit = (text, separators) => {
-  if (text.length <= MAX_CHUNK_CHARS) return [text];
-
-  const [separator, ...remaining] = separators;
-  if (separator === undefined) return hardSlice(text);
-
-  const splits = text.split(separator).filter((s) => s.length > 0);
-  const merged = mergeSplits(splits, separator);
-
-  const result = [];
-  for (const piece of merged) {
-    if (piece.length > MAX_CHUNK_CHARS) {
-      result.push(...recursiveSplit(piece, remaining));
-    } else {
-      result.push(piece);
-    }
-  }
-  return result;
-};
-
-const chunkContent = (content) => recursiveSplit(content, CHUNK_SEPARATORS).filter(Boolean);
+// How many children go into one embedding request + one INSERT, and how many
+// of those groups are in flight at once for ONE document. The separate global
+// embedding limiter (concurrencyLimiter.js) bounds actual API concurrency
+// across ALL documents a worker is running.
+const EMBED_GROUP_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || "20", 10) * 2;
+const GROUP_CONCURRENCY = parseInt(process.env.PAGE_CONCURRENCY || "3", 10);
+const REUSED_INSERT_BATCH = 200;
 
 const deleteTempFile = async (filePath, log) => {
   if (!filePath) return;
@@ -96,68 +35,186 @@ const deleteTempFile = async (filePath, log) => {
   }
 };
 
+const inBatches = (items, size) => {
+  const batches = [];
+  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
+  return batches;
+};
+
 /**
- * Processes ONE page against its persisted kb_document_page state, skipping
- * whatever's already done:
- *  - Embedding already completed -> page is done, nothing to do.
- *  - Otherwise runs whichever steps are still needed and persists progress
- *    after EACH step succeeds, so a later failure doesn't lose earlier work.
+ * Runs `worker` over `items` with at most `limit` in flight. Never rejects: a
+ * worker handles its own failure so one bad group cannot abort the others.
  */
-const processPage = async ({ docId, page, pageRow, fileName, log }) => {
-  await documentPages.updatePage(pageRow.id, { status: "processing", startedAt: pageRow.startedAt ?? new Date() });
+const runWithConcurrency = async (items, limit, worker) => {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await worker(items[next++]);
+    })
+  );
+};
 
-  try {
-    const finalContent = page.text;
-    await documentPages.updatePage(pageRow.id, { hasVisual: page.hasVisualContent });
-    log(`page ${page.pageNumber}: using extracted text directly (Vision disabled)`);
+// A Word file has no pages; its chunks carry page_from = null and are tracked
+// against one pseudo-page for progress accounting.
+const pageOf = (child) => child.pageFrom ?? 1;
 
-    if (!finalContent || !finalContent.trim()) {
-      await documentPages.updatePage(pageRow.id, { status: "completed", embeddingCompleted: true, completedAt: new Date() });
-      log(`page ${page.pageNumber} has no extractable content -> skipped`);
-      return { chunksCreated: 0 };
-    }
+const extractBlocks = (kind, buffer) => {
+  if (kind === "pdf") return extractDocumentBlocks(buffer);
+  if (kind === "docx") return extractDocxBlocks(buffer);
+  throw Object.assign(new Error(unsupportedTypeMessage(null)), { status: 400 });
+};
 
-    if (pageRow.embeddingCompleted) {
-      log(`page ${page.pageNumber} already embedded -> skipped on retry`);
-      return { chunksCreated: await chunks.countChunksForPage(docId, page.pageNumber) };
-    }
+/**
+ * The RAG stage: parse the file (PDF or Word) into structure, chunk it into
+ * parents and children, embed the children, store both, and publish.
+ *
+ * The whole document version is rebuilt on every run, because a parent
+ * (a heading section) spans pages and cannot be redone page by page. Retries
+ * stay cheap anyway: children whose text was already embedded — by an earlier
+ * failed attempt or an earlier version — reuse their stored vector.
+ *
+ * All-or-nothing publish: if ANY group of children fails to embed, nothing is
+ * published, so retrieval never serves half a manual (a procedure whose
+ * warning is missing is worse than a document that is not searchable yet). The
+ * previous live version, if any, stays live until a complete replacement exists.
+ */
+const runRagStage = async ({ document, buffer, fileName, log }) => {
+  const docId = document.docId;
 
-    await documentPages.updatePage(pageRow.id, { status: "embedding" });
+  const kind = kindOfFileName(fileName);
+  const extraction = await withTiming(`[ingest ${docId}] extract ${kind} structure`, () => extractBlocks(kind, buffer));
+  const { totalPages, pages } = extraction;
+  log(`${describeKind(kind)}: ${kind === "pdf" ? `${totalPages} pages, ` : ""}${extraction.blocks.length} structural blocks`);
 
-    const contentChunks = chunkContent(finalContent);
-    const embeddings = await generateEmbeddings(contentChunks);
+  await documentPages.ensurePages(docId, pages.map((p) => p.pageNumber));
+  await documentPages.resetPagesForRun(
+    docId,
+    pages.map((p) => ({ pageNumber: p.pageNumber, hasVisual: p.hasVisualContent }))
+  );
 
-    await chunks.upsertChunks(
-      docId,
-      contentChunks.map((chunkText, i) => ({
-        pageNumber: page.pageNumber,
-        chunkIndex: i,
-        content: chunkText,
-        embedding: embeddings[i],
-        metadata: { sourceFile: fileName, hadVisual: page.hasVisualContent },
-      }))
-    );
-    log(`page ${page.pageNumber}: ${contentChunks.length} chunk(s) embedded + stored`);
+  // Diagrams, photos, charts and tables: screenshot -> vision model -> description text,
+  // inserted as blocks so it is chunked and embedded like everything else. Never fails the
+  // document; pages it could not describe are marked below so a retry redoes only those.
+  const version = document.liveVersion + 1;
+  const enrichment = await withTiming(`[ingest ${docId}] describe visuals`, () =>
+    enrichWithVisuals({ kind, buffer, extraction, fileName, docId, version, log })
+  );
+  const blocks = enrichment.blocks;
 
-    await documentPages.updatePage(pageRow.id, { status: "completed", embeddingCompleted: true, completedAt: new Date() });
+  const params = await loadChunkParams();
+  const { parents, children } = await withTiming(`[ingest ${docId}] buildChunkTree`, () =>
+    buildChunkTree(blocks, fileName, params)
+  );
+  log(`chunk plan: ${parents.length} parent section(s), ${children.length} child chunk(s)`);
 
-    return { chunksCreated: contentChunks.length };
-  } catch (err) {
-    // Previously silent — a page failure only showed up if you queried
-    // kb_document_page directly. Now visible in the live log stream too,
-    // with the page number and full provider error attached.
-    logger.error(`[ingest ${docId}] page ${page.pageNumber} failed`, err);
-    await documentPages.incrementRetryCount(pageRow.id, (err.message || "Unknown page error").slice(0, 500));
-    throw err;
+  if (children.length === 0) {
+    // No text layer (scanned pages) or nothing extractable. Every page is
+    // accounted for; the caller turns "no chunks" into a failed document.
+    await documentPages.completePages(docId, pages.map((p) => p.pageNumber));
+    return { totalPages, version: null, published: false };
   }
+
+  // Reuse vectors already computed for identical text; drop any half-written
+  // rows from an earlier attempt at this same (never-published) version.
+  const reusable = await chunks.loadReusableEmbeddings(docId, EMBEDDING_MODEL);
+  await chunks.clearUnpublishedVersion(docId, version);
+  const parentIdByKey = await chunks.insertParents(docId, version, parents);
+
+  // Every description was already saved as it arrived; this saves the rest (cache hits carried over
+  // from an earlier version, and "decorative" results so those are not asked again). Never deleted:
+  // they are the cache a retry reads. They go live with this version, in publish_document_version().
+  await figures.insertFigures(docId, version, enrichment.figures);
+
+  const prepared = children.map((child) => ({
+    ...child,
+    metadata: { ...child.metadata, embedding_model: EMBEDDING_MODEL, source_file: fileName },
+  }));
+  const reused = [];
+  const toEmbed = [];
+  for (const child of prepared) {
+    const vector = reusable.get(chunks.hashText(child.text));
+    if (vector) reused.push({ ...child, embedding: vector });
+    else toEmbed.push(child);
+  }
+  log(`children: ${reused.length} reuse a stored vector, ${toEmbed.length} to embed`);
+
+  // Progress accounting: a page is complete when every child STARTING on it is stored.
+  const pendingByPage = new Map();
+  for (const child of children) pendingByPage.set(pageOf(child), (pendingByPage.get(pageOf(child)) ?? 0) + 1);
+  const failedPages = new Set();
+
+  await documentPages.completePages(
+    docId,
+    pages.map((p) => p.pageNumber).filter((n) => !pendingByPage.has(n))
+  );
+
+  const settle = async (group, error) => {
+    const groupPages = [...new Set(group.map(pageOf))];
+
+    if (error) {
+      groupPages.forEach((n) => failedPages.add(n));
+      logger.error(`[ingest ${docId}] ${group.length} chunk(s) failed to embed/store (page(s) ${groupPages.join(", ")})`, error);
+      await documentPages.failPages(docId, groupPages, error.message || "Unknown embedding error");
+      return;
+    }
+
+    const finished = [];
+    for (const child of group) {
+      const left = pendingByPage.get(pageOf(child)) - 1;
+      pendingByPage.set(pageOf(child), left);
+      if (left === 0 && !failedPages.has(pageOf(child))) finished.push(pageOf(child));
+    }
+    await documentPages.completePages(docId, finished);
+  };
+
+  for (const batch of inBatches(reused, REUSED_INSERT_BATCH)) {
+    try {
+      await chunks.insertChildren(docId, version, batch, parentIdByKey);
+      await settle(batch, null);
+    } catch (err) {
+      await settle(batch, err);
+    }
+  }
+
+  await runWithConcurrency(inBatches(toEmbed, EMBED_GROUP_SIZE), GROUP_CONCURRENCY, async (group) => {
+    try {
+      const embeddings = await generateEmbeddings(group.map((c) => c.text));
+      await chunks.insertChildren(
+        docId,
+        version,
+        group.map((child, i) => ({ ...child, embedding: embeddings[i] })),
+        parentIdByKey
+      );
+      await settle(group, null);
+    } catch (err) {
+      await settle(group, err);
+    }
+  });
+
+  let published = false;
+  if (failedPages.size === 0) {
+    await publishDocumentVersion(docId, version);
+    published = true;
+    log(`published version ${version} (${children.length} chunks live under ${parents.length} sections)`);
+  } else {
+    log(`NOT published: ${failedPages.size} page(s) failed — version ${version} stays pending until a retry succeeds`);
+  }
+
+  // Text is searchable either way, but a page whose diagrams/tables could not be described is
+  // marked failed so the document shows "Needs retry" and the retry redoes only those pages
+  // (every description that did succeed is served from the cache).
+  if (enrichment.failedPages.length > 0) {
+    await documentPages.failPages(docId, enrichment.failedPages, "Diagram or table description failed — retry to describe it");
+  }
+
+  return { totalPages, version, published };
 };
 
 /**
  * The actual work — called ONLY by the worker (src/worker.js), never
- * synchronously from an HTTP handler. Runs RAG processing (pages not yet
- * completed) + WorkDrive archival (only if not already done) for a
- * document, publishes it once chunks exist, and finalizes its status.
- * Shared by both a fresh upload's job and a retry's job.
+ * synchronously from an HTTP handler. Runs RAG processing + WorkDrive
+ * archival (only if not already done) for a document, and finalizes its
+ * status. Shared by both a fresh upload's job and a retry's job.
  */
 export const processDocument = async (document) => {
   const log = (msg) => logger.info(`[ingest ${document.docId}] ${msg}`);
@@ -172,58 +229,34 @@ export const processDocument = async (document) => {
 
   await documents.updateIngestState(document.docId, { ingestStatus: "rag_processing" });
 
-  const { totalPages, pages } = await withTiming(`[ingest ${document.docId}] parsePdfPages (total)`, () =>
-    parsePdfPages(buffer)
-  );
-  log(`pages detected: ${totalPages}`);
+  // A retry whose only outstanding work is the WorkDrive archive must not
+  // rebuild a version that is already live and complete.
+  const existingPages = await documentPages.findPagesByDoc(document.docId);
+  const ragAlreadyDone =
+    document.liveVersion > 0 && existingPages.length > 0 && existingPages.every((p) => p.status === "completed");
 
-  // Upsert is what makes this safe to call again on retry: existing rows
-  // (and their progress) are left untouched, only missing ones are created.
-  await documentPages.ensurePages(document.docId, pages.map((p) => p.pageNumber));
-
-  const existingPageRows = await documentPages.findPagesByDoc(document.docId);
-  const pageRowByNumber = new Map(existingPageRows.map((r) => [r.pageNumber, r]));
-  const pagesToProcess = pages.filter((p) => pageRowByNumber.get(p.pageNumber)?.status !== "completed");
-
-  log(`${pages.length - pagesToProcess.length}/${pages.length} page(s) already completed -> skipping; processing ${pagesToProcess.length}`);
-
-  for (let i = 0; i < pagesToProcess.length; i += PAGE_CONCURRENCY) {
-    const batch = pagesToProcess.slice(i, i + PAGE_CONCURRENCY);
-    await Promise.allSettled(
-      batch.map((page) =>
-        withTiming(`[ingest ${document.docId}] page ${page.pageNumber} TOTAL`, () =>
-          processPage({
-            docId: document.docId,
-            page,
-            pageRow: pageRowByNumber.get(page.pageNumber),
-            fileName,
-            log,
-          })
-        )
-      )
-    );
+  let totalPages = document.pageCount ?? existingPages.length;
+  if (ragAlreadyDone) {
+    log(`version ${document.liveVersion} already live and complete -> skipping RAG stage`);
+  } else {
+    ({ totalPages } = await runRagStage({ document, buffer, fileName, log }));
   }
 
   const finalPageRows = await documentPages.findPagesByDoc(document.docId);
   const completedPages = finalPageRows.filter((r) => r.status === "completed");
   const failedPages = finalPageRows.filter((r) => r.status === "failed");
   const chunksCreated = await chunks.countChunks(document.docId);
-
-  // Only published (is_live) chunks are searchable (DATABASE.md §4/§6.1) —
-  // publish as soon as there's anything to publish, even on a partial
-  // (completed_with_errors) run, so the pages that DID succeed are usable.
-  if (chunksCreated > 0) {
-    await publishDocumentVersion(document.docId, 1);
-    log(`published version 1 (${chunksCreated} chunks live)`);
-  }
+  // A failed page can mean "text not searchable yet" (embedding failed, nothing published) or
+  // "text is live but its diagrams could not be described". The admin needs to know which.
+  const searchable = ((await documents.findById(document.docId))?.liveVersion ?? 0) > 0;
 
   // WorkDrive only after RAG processing, and only if not already archived —
   // a retry with an external_ref already set skips straight past this.
   let workdriveFileId = document.externalRef?.startsWith("upload:") ? null : document.externalRef;
-  if (!workdriveFileId && completedPages.length > 0) {
+  if (!workdriveFileId && chunksCreated > 0) {
     await documents.updateIngestState(document.docId, { ingestStatus: "workdrive_uploading" });
     try {
-      const result = await uploadOriginalPdf(buffer, fileName, document.docId);
+      const result = await uploadOriginalFile(buffer, fileName, document.docId);
       workdriveFileId = result.workdriveFileId;
       await documents.updateIngestState(document.docId, {
         externalRef: workdriveFileId,
@@ -238,7 +271,7 @@ export const processDocument = async (document) => {
   }
 
   let status;
-  if (completedPages.length === 0) {
+  if (chunksCreated === 0) {
     status = "failed";
   } else if (failedPages.length > 0) {
     status = "completed_with_errors";
@@ -260,11 +293,17 @@ export const processDocument = async (document) => {
     failedPages: failedPages.length,
     tempFilePath: canDeleteTempFile ? null : document.tempFilePath,
     errorMessage:
-      failedPages.length > 0
-        ? `Failed page(s): ${failedPages.map((p) => p.pageNumber).join(", ")}`
-        : !workdriveFileId
-          ? "WorkDrive upload pending/failed — retry to complete archival"
-          : null,
+      chunksCreated === 0
+        ? kindOfFileName(fileName) === "pdf"
+          ? "No extractable text — the PDF looks scanned (no text layer). Upload a text-searchable version; OCR is not enabled."
+          : "No text was found in this document. Make sure it contains text (not only images) and upload it again."
+        : failedPages.length > 0
+          ? searchable
+            ? `Page(s) ${failedPages.map((p) => p.pageNumber).join(", ")}: diagrams or tables could not be described. The text is searchable; retry to describe them.`
+            : `Failed page(s): ${failedPages.map((p) => p.pageNumber).join(", ")} — not published until a retry succeeds`
+          : !workdriveFileId
+            ? "WorkDrive upload pending/failed — retry to complete archival"
+            : null,
   });
 
   if (canDeleteTempFile) {
@@ -290,12 +329,26 @@ export const processDocument = async (document) => {
 /**
  * HTTP-fast path: saves the temp file's hash, dedups, creates the document
  * row (status=queued), and enqueues a `process_document` job. Does NOT parse
- * the PDF, call Vision, embed, or touch WorkDrive — all of that happens
- * later in the worker. This is what lets POST /api/documents/upload return
- * 202 immediately regardless of document size.
+ * the PDF, embed, or touch WorkDrive — all of that happens later in the
+ * worker. This is what lets POST /api/documents/upload return 202
+ * immediately regardless of document size.
  */
 export const enqueueIngestion = async ({ filePath, fileName }) => {
+  const kind = kindOfFileName(fileName);
+  if (!kind) {
+    await deleteTempFile(filePath);
+    throw Object.assign(new Error(unsupportedTypeMessage(fileName)), { status: 400 });
+  }
+
   const buffer = await fs.readFile(filePath);
+
+  // Catch a renamed or corrupt file now, in the request, instead of after
+  // several failed background attempts.
+  if (!bufferMatchesKind(buffer, kind)) {
+    await deleteTempFile(filePath);
+    throw Object.assign(new Error(`"${fileName}" is not a valid ${describeKind(kind)} (the file contents do not match its type).`), { status: 400 });
+  }
+
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
 
   // Dedup: identical bytes already fully ingested -> skip creating a new
@@ -342,7 +395,7 @@ export const enqueueRetry = async (docId) => {
 
   if (!document.tempFilePath) {
     const err = new Error(
-      "Original PDF is no longer available for retry (already archived or cleared). Please re-upload the file."
+      "The original file is no longer available for retry (already archived or cleared). Please re-upload it."
     );
     err.status = 410;
     throw err;

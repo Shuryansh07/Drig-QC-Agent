@@ -23,7 +23,7 @@ export function useRagQuery() {
 
       logger.info(
         `[rag search] answer received in ${durationMs}ms (${result.sources.length} source(s): ${result.sources
-          .map((s) => `p.${s.page_number}`)
+          .map((s) => s.page_number !== null ? `p.${s.page_number}` : "section")
           .join(", ") || "none"})`,
       );
 

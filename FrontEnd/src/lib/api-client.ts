@@ -46,10 +46,14 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   logger.info(`-> ${method} ${url}`);
 
   try {
+    // A multipart body must NOT get a Content-Type: the browser sets it with
+    // the boundary, and forcing application/json here would break the upload.
+    const isMultipart = init.body instanceof FormData;
+
     const res = await fetch(url, {
       ...init,
       headers: {
-        "Content-Type": "application/json",
+        ...(isMultipart ? {} : { "Content-Type": "application/json" }),
         ...(await authHeaders()),
         ...init.headers,
       },

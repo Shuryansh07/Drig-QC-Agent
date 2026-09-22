@@ -6,7 +6,9 @@
 
 export interface RagQuerySource {
   document_id: string;
-  page_number: number;
+  /** Null for a Word document, which has no pages. */
+  page_number: number | null;
+  section_path?: string | null;
 }
 
 export interface RagQueryResponse {

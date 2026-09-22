@@ -15,7 +15,6 @@ import { HandoffSheet } from "@/features/handoff/components/HandoffSheet";
 import { PageShell } from "@/components/common/PageShell";
 import { EmptyState } from "@/components/common/EmptyState";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
-import { SessionHeader } from "@/features/chat/components/SessionHeader";
 
 export default function ChatScreen() {
   const { sessionId = "" } = useParams();
@@ -26,7 +25,7 @@ export default function ChatScreen() {
   const streaming = useAppSelector((s) => s.chat.status);
 
   const { data: conversation } = useConversation(sessionId);
-  const { send } = useChatStream(sessionId);
+  const { send, cancel } = useChatStream(sessionId);
   const recordResolution = useRecordResolution(sessionId);
 
   const openEngineer = useCallback(
@@ -44,7 +43,6 @@ export default function ChatScreen() {
 
   return (
     <PageShell
-      header={<SessionHeader frame={conversation?.frame ?? null} />}
       dock={
         <div className="space-y-3">
           <TranscriptPreview onSend={(text) => void send(text)} />
@@ -85,6 +83,7 @@ export default function ChatScreen() {
           onAnswerClarify={(value) => void send(value)}
           onSkipClarify={() => void send("I don't know")}
           onRequestEngineer={openEngineer}
+          onCancel={cancel}
         />
       </div>
 
