@@ -34,8 +34,12 @@ const get = async <T>(key: string, fallback: T): Promise<T> => {
   return values.has(key) ? (values.get(key) as T) : fallback;
 };
 
+/** Generic typed read for callers that own a family of keys (e.g. the chunker's `chunk.*` settings). */
+export const getSetting = get;
+
 export const getRetrievalMatchCount = () => get<number>("retrieval.match_count", 8);
 export const getRetrievalAdmitMinSimilarity = () => get<number>("retrieval.admit_min_similarity", 0.35);
 export const getRetrievalAdmitOnExactCode = () => get<boolean>("retrieval.admit_on_exact_code", true);
 export const getEmbeddingModel = () => get<string>("gate.embedding_model", "text-embedding-3-small");
 export const getAnswerModel = () => get<string>("gate.answer_model", "gpt-4o-mini");
+export const getDeadlineMs = () => get<number>("gate.deadline_ms", 22000);

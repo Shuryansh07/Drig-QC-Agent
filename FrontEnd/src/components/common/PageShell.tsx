@@ -9,13 +9,15 @@ interface PageShellProps {
   dock?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** Desk screens (admin) use the width; phone screens keep the single reading column. */
+  wide?: boolean;
 }
 
 /**
  * One column, full height, with a fixed dock in the bottom third. Every screen
  * uses this so the primary action is always in the same place under the thumb.
  */
-export function PageShell({ header, dock, children, className }: PageShellProps) {
+export function PageShell({ header, dock, children, className, wide = false }: PageShellProps) {
   return (
     <div className="bg-background flex h-dvh flex-col">
       <OfflineBanner />
@@ -26,7 +28,7 @@ export function PageShell({ header, dock, children, className }: PageShellProps)
       ) : null}
 
       <main className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain", className)}>
-        <div className="mx-auto w-full max-w-[42rem] px-5 py-6">{children}</div>
+        <div className={cn("mx-auto w-full px-5 py-6", wide ? "max-w-5xl" : "max-w-[42rem]")}>{children}</div>
       </main>
 
       {dock ? (

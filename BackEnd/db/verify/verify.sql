@@ -50,6 +50,22 @@ where c.is_live
   and (d.status <> 'current' or c.version <> d.live_version
        or c.embedding is null or c.deleted_at is not null);
 
+\echo '== 4b. parent chunks are never searchable ====================='
+select 'parent chunks that are live or embedded' as check_name,
+       count(*)::text as value,
+       case when count(*) = 0 then 'PASS' else 'FAIL: parents are read by id, never matched' end as status
+from kb_chunk
+where is_parent and (is_live or embedding is not null);
+
+\echo '== 4c. every child points at a parent of the same document ====='
+select 'children whose parent is missing or belongs to another document' as check_name,
+       count(*)::text as value,
+       case when count(*) = 0 then 'PASS' else 'FAIL' end as status
+from kb_chunk c
+where c.parent_chunk_id is not null
+  and not exists (select 1 from kb_chunk p
+                   where p.chunk_id = c.parent_chunk_id and p.doc_id = c.doc_id and p.is_parent);
+
 \echo '== 5. INV-6: every live call card has an approval ============='
 select 'live cards without approval' as check_name,
        count(*)::text as value,

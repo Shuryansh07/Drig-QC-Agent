@@ -15,12 +15,16 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@langchain/textsplitters": "^1.0.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "mammoth": "^1.12.3",
     "multer": "^2.4.0",
+    "node-html-parser": "^9.0.4",
     "openai": "^7.15.0",
     "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^5.4.296",
     "pg": "^8.23.0"
   },
   "devDependencies": {

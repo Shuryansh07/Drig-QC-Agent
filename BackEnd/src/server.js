@@ -6,6 +6,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import multer from "multer";
 import pdfRoutes from "./routes/pdf.routes.js";
 import documentRoutes from "./routes/document.routes.js";
 import ragRoutes from "./routes/rag.routes.js";
@@ -40,6 +41,16 @@ app.get("/api/health", async (req, res) => {
     logger.error("Health check failed", err);
     res.status(500).json({ status: "error", message: err.message });
   }
+});
+
+// multer rejects a non-PDF or an oversized file by passing an error down the
+// chain; without this it surfaces as Express's default HTML 500, which the
+// admin panel can't show. A rejected upload is the client's mistake: 400 JSON.
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError || err?.code === "UNSUPPORTED_FILE_TYPE") {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+  return next(err);
 });
 
 const PORT = process.env.PORT || 5000;

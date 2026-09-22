@@ -3,46 +3,80 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAppDispatch } from "@/app/hooks";
 import { chatActions } from "@/features/chat/chatSlice";
 import { outboxActions } from "@/features/outbox/outboxSlice";
-import { apiFetch, ApiError } from "@/lib/api-client";
+import { parseWireEvent, type WireSource } from "@/features/chat/streamEvents";
+import { apiUrl, authHeaders, ApiError } from "@/lib/api-client";
+import { readSSEFrames } from "@/lib/sse";
 import { queryKeys } from "@/lib/query-client";
 import { isOnline } from "@/lib/offline";
-import type { AnswerStep, Citation, Conversation, Turn } from "@/types/contracts";
-
-interface RagQueryResponse {
-  answer: string;
-  sources: { document_id: string; page_number: number }[];
-}
+import { logger } from "@/lib/logger";
+import type { AnswerStep, Citation, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
 
 // No auth/tenant selection UI exists yet (AuthProvider is a stub — see
 // features/auth/AuthProvider.tsx), so there's no real customer_id to read.
-// "default" matches what most of the test documents were uploaded under.
 const CUSTOMER_ID = "default";
 
-const appendTurn = (
-  queryClient: ReturnType<typeof useQueryClient>,
-  sessionId: string,
-  turn: Turn,
-) => {
+/**
+ * How long with no answer text before the UI says it is taking longer than
+ * usual. A technician staring at a spinner assumes the app is broken within
+ * about ten seconds, so this speaks well before that. The hard deadline
+ * (gate.deadline_ms, 22s) is separate and comes from the server.
+ */
+const SLOW_AFTER_MS = 5_000;
+
+const appendTurn = (queryClient: ReturnType<typeof useQueryClient>, sessionId: string, turn: Turn) => {
   queryClient.setQueryData<Conversation>(queryKeys.conversation(sessionId), (prev) =>
-    prev
-      ? { ...prev, turns: [...prev.turns, turn] }
-      : { sessionId, turns: [turn], frame: null },
+    prev ? { ...prev, turns: [...prev.turns, turn] } : { sessionId, turns: [turn], frame: null },
   );
 };
 
+/** "T200-install-guide.docx" -> "T200-install-guide". */
+const docName = (title: string | null | undefined): string => (title ?? "").replace(/\.(pdf|docx)$/i, "");
+
+const toCitations = (sources: WireSource[]): Citation[] =>
+  Array.from(
+    new Map(
+      sources.map((s) => {
+        // The last heading in the path is the most specific place to look.
+        const section = s.section_path?.split(" > ").pop() ?? "";
+        const paged = s.page_number !== null && s.page_number !== undefined;
+        const chunkId = `${s.document_id}:${paged ? s.page_number : section || "document"}`;
+        const citation: Citation = {
+          chunkId,
+          kind: "document",
+          // A PDF is cited by page, then section. A Word file has no pages, so it is cited by
+          // document AND section: two Word files can both have a "Wiring" section.
+          label: paged ? `Page ${s.page_number}` : [docName(s.document_title), section].filter(Boolean).join(" · ") || "Document",
+          locator: paged ? section : "",
+          documentId: s.document_id,
+        };
+        return [chunkId, citation];
+      }),
+    ).values(),
+  );
+
+const agentTurn = (overrides: Partial<Turn>): Turn => ({
+  turnId: crypto.randomUUID(),
+  role: "agent",
+  text: "",
+  steps: [],
+  citations: [],
+  gateOutcome: null,
+  clarify: null,
+  notCovered: null,
+  conflict: null,
+  resolution: null,
+  createdAt: new Date().toISOString(),
+  ...overrides,
+});
+
 /**
- * Was SSE streaming against a `/chat` endpoint that was never built. The
- * real backend (BackEnd/src/controllers/rag.controller.js) is one-shot:
- * POST /rag/query -> { answer, sources }, no streaming. This adapts that
- * single response into the same Redux/query-cache events the rest of the
- * chat UI (TurnView, StreamingTurnView, AnswerSteps, citations) already
- * consumes, so none of that rendering code had to change — the "thinking"
- * skeleton just resolves straight to the finished answer instead of tokens
- * arriving incrementally.
+ * Asks POST /api/rag/query/stream and turns the server-sent events into the
+ * Redux/query-cache updates the chat UI already renders: a stage label while
+ * the server searches, sources as soon as they are known, then the answer
+ * token by token, then the finished turn committed into the conversation.
  *
- * Fields the real backend has no data for (frame, clarify, notCovered,
- * conflict, deadlineWarning) are simply never dispatched, rather than
- * faked — better an empty state than an invented one.
+ * Fields the real backend has no data for (frame, clarify, conflict) are
+ * simply never dispatched, rather than faked.
  */
 export function useChatStream(sessionId: string) {
   const dispatch = useAppDispatch();
@@ -79,65 +113,106 @@ export function useChatStream(sessionId: string) {
       });
 
       dispatch(chatActions.streamStarted());
-      const requestStart = performance.now();
+      const slowTimer = window.setTimeout(() => dispatch(chatActions.slowResponse()), SLOW_AFTER_MS);
+
+      // Tokens arrive far faster than the screen refreshes. Collect them and
+      // dispatch once per frame, so a fast stream is not one re-render per word.
+      let pendingText = "";
+      let frame = 0;
+      const flushText = () => {
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+        if (pendingText) {
+          dispatch(chatActions.answerDelta(pendingText));
+          pendingText = "";
+        }
+      };
+
+      let citations: Citation[] = [];
+      let finished = false;
+
+      const commitAnswer = (answer: string, durationMs: number) => {
+        const step: AnswerStep = { n: 1, text: answer, sourceChunkIds: citations.map((c) => c.chunkId) };
+        const turn = agentTurn({ text: answer, steps: [step], citations, gateOutcome: "answered", durationMs });
+        dispatch(chatActions.serverEvent({ type: "done", turn }));
+        appendTurn(queryClient, sessionId, turn);
+        dispatch(chatActions.clearStream());
+      };
+
+      const commitRefusal = (notCovered: NotCoveredInfo) => {
+        // No durationMs: "Answered in Xms" under a refusal would be false.
+        const turn = agentTurn({ text: notCovered.message, gateOutcome: "not_covered", notCovered });
+        dispatch(chatActions.serverEvent({ type: "not_covered", notCovered }));
+        dispatch(chatActions.serverEvent({ type: "done", turn }));
+        appendTurn(queryClient, sessionId, turn);
+        dispatch(chatActions.clearStream());
+      };
 
       try {
-        const response = await apiFetch<RagQueryResponse>("/rag/query", {
+        const response = await fetch(apiUrl("/rag/query/stream"), {
           method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...(await authHeaders()) },
           body: JSON.stringify({ customer_id: CUSTOMER_ID, question: trimmed }),
           signal: ctrl.signal,
         });
 
-        if (ctrl.signal.aborted) return;
-
-        const durationMs = Math.round(performance.now() - requestStart);
-
-        const citations: Citation[] = Array.from(
-          new Map(
-            response.sources.map((s) => [
-              `${s.document_id}:${s.page_number}`,
-              {
-                chunkId: `${s.document_id}:${s.page_number}`,
-                kind: "document" as const,
-                label: `Page ${s.page_number}`,
-                locator: `Page ${s.page_number}`,
-                documentId: s.document_id,
-              },
-            ]),
-          ).values(),
-        );
-
-        const step: AnswerStep = {
-          n: 1,
-          text: response.answer,
-          sourceChunkIds: citations.map((c) => c.chunkId),
-        };
-
-        dispatch(chatActions.serverEvent({ type: "step", step }));
-        for (const citation of citations) {
-          dispatch(chatActions.serverEvent({ type: "citation", citation }));
+        if (!response.ok) {
+          const body = (await response.json().catch(() => ({}))) as { code?: string; message?: string };
+          throw new ApiError(response.status, body.code ?? "unknown", body.message ?? response.statusText);
         }
 
-        const turn: Turn = {
-          turnId: crypto.randomUUID(),
-          role: "agent",
-          text: response.answer,
-          steps: [step],
-          citations,
-          gateOutcome: "answered",
-          clarify: null,
-          notCovered: null,
-          conflict: null,
-          resolution: null,
-          createdAt: new Date().toISOString(),
-          durationMs,
-        };
+        for await (const rawFrame of readSSEFrames(response)) {
+          const event = parseWireEvent(rawFrame);
+          if (!event) continue;
 
-        dispatch(chatActions.serverEvent({ type: "done", turn }));
-        appendTurn(queryClient, sessionId, turn);
-        dispatch(chatActions.clearStream());
+          switch (event.type) {
+            case "stage":
+              dispatch(chatActions.stageChanged(event.stage));
+              break;
+
+            case "sources":
+              citations = toCitations(event.sources);
+              for (const citation of citations) {
+                dispatch(chatActions.serverEvent({ type: "citation", citation }));
+              }
+              break;
+
+            case "delta":
+              pendingText += event.text;
+              if (!frame) frame = requestAnimationFrame(flushText);
+              break;
+
+            case "deadline_warning":
+              dispatch(chatActions.serverEvent({ type: "deadline_warning", elapsedMs: event.elapsedMs }));
+              break;
+
+            case "not_covered":
+              finished = true;
+              flushText();
+              commitRefusal(event.notCovered);
+              break;
+
+            case "complete":
+              finished = true;
+              flushText();
+              commitAnswer(event.answer, event.durationMs);
+              break;
+
+            case "error":
+              finished = true;
+              flushText();
+              dispatch(chatActions.serverEvent({ type: "error", code: event.code, message: event.message }));
+              break;
+          }
+        }
+
+        // The connection closed without a verdict: a dropped stream, not an answer.
+        if (!finished && !ctrl.signal.aborted) {
+          dispatch(chatActions.serverEvent({ type: "error", code: "stream_ended", message: "The connection dropped." }));
+        }
       } catch (err) {
         if (ctrl.signal.aborted) return;
+        logger.error("[chat stream] failed", err);
         dispatch(
           chatActions.serverEvent({
             type: "error",
@@ -145,6 +220,9 @@ export function useChatStream(sessionId: string) {
             message: err instanceof Error ? err.message : "The connection dropped.",
           }),
         );
+      } finally {
+        window.clearTimeout(slowTimer);
+        if (frame) cancelAnimationFrame(frame);
       }
     },
     [sessionId, dispatch, queryClient],

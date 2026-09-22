@@ -131,6 +131,7 @@ confirmed each one (§9).
 | Vector search never silently returns too few rows | Every vector function sets `hnsw.iterative_scan`, `ef_search`, `max_scan_tuples` on itself |
 | Dead or superseded rows never take search slots | HNSW and full-text indexes are **partial** (`where deleted_at is null and is_live`) |
 | Only published, current, embedded chunks are searchable | `is_live` is set only by `publish_document_version`, which refuses missing embeddings or non-current documents |
+| A parent chunk can never be matched | `kb_chunk.is_parent` rows are never live and never embedded: a check constraint (`kb_chunk_parent_not_searchable`, migration 0730) enforces it. Parents are read by id through `parent_chunk_id`. `verify.sql` 4b/4c re-check it. |
 | Old citations still resolve (INV-7) | Nothing is hard-deleted. Old versions are soft-deleted. Superseded documents stay stored but leave the search index. |
 | Wiring is exact-match only (INV-2) | `lookup_wiring` returns exact rows or **zero**, never a nearest model year |
 | A known-bad wiring value can't be served | Quarantined rows come back with `cell_raw`, `wire_colour` and `pin` **set to NULL** |
@@ -217,7 +218,15 @@ lexical_rank, dense_similarity, score`.
 - **Web snapshots are excluded unless asked for** (`p_source_types => '{web}'`).
 - Send the **parent** chunk (`parent_chunk_id`) to the model. The child chunk
   was only the match.
-- Log every returned row to `turn_retrieval`.
+- Log every returned row to `turn_retrieval`. (Not built yet: it needs a
+  `chat_message` row, and the backend has no chat sessions until auth exists.)
+
+**Where this is implemented:** `src/services/ragRetrieval.service.js`
+(`decideAdmission` is Gate 2; results are de-duplicated by parent). When the
+gate refuses, no LLM call is made, the question is written to `kb_gap` with
+reason `not_covered`, and the response lists the live document titles.
+`POST /api/rag/query/stream` sends this as server-sent events; the one-shot
+`POST /api/rag/query` applies the same gate.
 
 ### 6.2 `lookup_wiring`: exact vehicle lookup
 
@@ -255,9 +264,35 @@ const { rows } = await pool.query(
 
 **Document (sync or upload)**
 1. Upsert `kb_document` (`sync_state = 'fetched'`). Uploads set `origin = 'upload'` and `uploaded_by`, and must answer "does this replace an existing document?". If yes, call `retire_document(old, 'superseded', new)`.
-2. Chunk into version `live_version + 1`. For every chunk whose `text_hash` already exists on the document, **reuse the stored vector** instead of calling the embedding API.
-3. Embed only new chunks. Insert images with the same `version`.
-4. `select publish_document_version(doc_id, new_version)`. It refuses if any chunk lacks a vector.
+2. Chunk into version `live_version + 1` as **parents and children** (`src/services/chunking/`). A parent is one heading section (`is_parent = true`, full text, no embedding, never live). A child is a small retrieval unit under it (`parent_chunk_id` set, embedded). Numbered procedures are never split between steps, and a warning box is copied into the procedure it belongs to. Sizes are the `chunk.*` rows in `setting`. For every child whose `text_hash` already exists on the document (same embedding model), **reuse the stored vector** instead of calling the embedding API.
+3. Embed only new children. Insert images with the same `version`.
+4. `select publish_document_version(doc_id, new_version)`. It refuses if any child lacks a vector. Parents are ignored by it. Publish is all-or-nothing: if any group of children failed to embed, do **not** publish; the previous live version stays live and a retry reuses the vectors already computed.
+
+Uploads accept PDF and Word (`.docx`). A Word file has no pages, so its chunks
+have `page_from` / `page_to` null and are cited by section (`section_path`) and
+document title instead. Progress is tracked against a single `kb_document_page`
+row. Old `.doc` files are rejected at upload.
+
+**Diagrams, photos, charts and tables (migration 0740).** A PDF page that has a
+real embedded image, a figure caption, enough vector drawing to be a diagram, or a
+table is screenshotted and sent to a vision model; so is each embedded picture in a
+Word file. The model's description becomes `figure` children in `kb_chunk`
+(`metadata.kind = 'figure'`, `machineGenerated = true`), chunked and embedded like
+any other text, and one `kb_image` row per picture records it (`s3_key` is null: no
+object storage yet, so the picture itself is not stored or shown). The
+description is **machine-generated and unverified**: every stored figure chunk and
+every parent carries the `[FIGURE — machine-generated description, unverified]`
+marker, `is_citable` stays false, and the answer prompt forbids stating a wire,
+pin, value or connection as fact when it appears only in such a description. The
+extracted text of a table is kept next to its description, never merged with it.
+`kb_image.content_hash` caches each result, so a retry or re-ingest only asks the
+model about pictures it has not described. A picture that fails is not fatal: its
+page is marked failed ("Needs retry"), the text stays searchable, and the retry
+redoes only that page. Tunables (`vision.*` rows): `vision.enabled` (off-switch),
+`vision.max_visuals_per_document` (cost cap), `vision.page_render_scale`,
+`vision.min_image_px`, `vision.min_vector_ops`.
+
+At query time `match_chunks` returns children. The application then reads each child's parent (`parent_chunk_id`) and sends the parent's text to the answer model, de-duplicated so two children of one section send it once.
 
 **Wiring sheet**
 1. Insert every row as sheet version `N + 1` (`is_live = false`). Rows that can't be parsed go to `wiring_quarantine`.

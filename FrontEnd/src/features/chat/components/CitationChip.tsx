@@ -28,7 +28,7 @@ export function CitationChip({ citation, unavailable, onOpen }: CitationChipProp
       disabled={unavailable}
       onClick={() => onOpen(citation.chunkId)}
       className={cn(
-        "inline-flex min-h-touch items-center gap-2 rounded-lg px-3.5 py-2 text-left",
+        "inline-flex min-h-touch max-w-full items-center gap-2 rounded-lg px-3.5 py-2 text-left",
         "text-micro font-medium transition-colors",
         unavailable
           ? "bg-muted text-muted-foreground cursor-not-allowed"
@@ -36,7 +36,7 @@ export function CitationChip({ citation, unavailable, onOpen }: CitationChipProp
       )}
     >
       <Icon className="size-4 shrink-0" aria-hidden />
-      <span className="truncate">
+      <span className="min-w-0 truncate">
         {citation.label}
         <span className="opacity-70"> {citation.locator}</span>
       </span>

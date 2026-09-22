@@ -53,6 +53,53 @@ const SELECT = `
     join kb_document_ingest_state s on s.doc_id = d.doc_id
 `;
 
+export interface DocumentSummary extends DocumentRecord {
+  /** Heading sections (parent chunks): what the answer model reads. */
+  parentChunks: number;
+  /** Retrieval chunks (children): what search matches. */
+  childChunks: number;
+}
+
+/** Newest first. Uploaded documents only; counts cover the current (unsuperseded-by-a-newer-version) chunks. */
+export const listDocuments = async (limit = 100): Promise<DocumentSummary[]> => {
+  const { orgId } = await getDefaultOrg();
+  const { rows } = await pool.query(
+    `select d.doc_id, d.title, d.content_hash, d.external_ref, d.live_version, d.created_at,
+            s.ingest_status, s.temp_file_path, s.page_count, s.processed_pages, s.failed_pages,
+            s.error_message, s.workdrive_folder_id, s.updated_at,
+            (select count(*) from kb_chunk c where c.doc_id = d.doc_id and c.deleted_at is null and c.is_parent) as parent_chunks,
+            (select count(*) from kb_chunk c where c.doc_id = d.doc_id and c.deleted_at is null and not c.is_parent) as child_chunks
+       from kb_document d
+       join kb_document_ingest_state s on s.doc_id = d.doc_id
+      where d.org_id = $1 and d.origin = 'upload'
+      order by d.created_at desc
+      limit $2`,
+    [orgId, limit]
+  );
+  return rows.map((r) => ({
+    ...mapRow(r),
+    parentChunks: parseInt(r.parent_chunks, 10),
+    childChunks: parseInt(r.child_chunks, 10),
+  }));
+};
+
+/**
+ * Titles of documents that are live and searchable. Shown when a question isn't
+ * covered, so the technician learns the boundary of what the assistant knows
+ * (NotCoveredInfo.coveredTopics) instead of just being told "no".
+ */
+export const listLiveDocumentTitles = async (limit = 8): Promise<string[]> => {
+  const { orgId } = await getDefaultOrg();
+  const { rows } = await pool.query<{ title: string }>(
+    `select title from kb_document
+      where org_id = $1 and status = 'current' and live_version > 0
+      order by title
+      limit $2`,
+    [orgId, limit]
+  );
+  return rows.map((r) => r.title.replace(/\.(pdf|docx)$/i, ""));
+};
+
 export const findByContentHash = async (contentHash: string): Promise<DocumentRecord | null> => {
   const { orgId } = await getDefaultOrg();
   const { rows } = await pool.query(

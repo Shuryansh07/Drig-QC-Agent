@@ -26,7 +26,12 @@ export type StreamStatus =
 export interface StreamingTurn {
   turnId: string | null;
   status: StreamStatus;
+  /** What the server is doing right now, so a wait has a name instead of a blank spinner. */
+  stage: "retrieving" | "generating" | null;
+  /** No answer text yet after several seconds: say so instead of looking frozen. */
+  slow: boolean;
   steps: AnswerStep[];
+  /** The answer as it arrives, before it is committed as a finished turn. */
   partialText: string;
   citations: Citation[];
   gateOutcome: GateOutcome | null;

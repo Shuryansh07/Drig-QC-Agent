@@ -1,6 +1,7 @@
 import { logger } from "../utils/logger.js";
 import { withTiming } from "../utils/timing.js";
 import { retryWithBackoff } from "../utils/retry.js";
+import { kindOfFileName, mimeOfKind } from "./chunking/documentTypes.js";
 
 const ACCOUNTS_DOMAIN = process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com";
 const API_BASE = process.env.ZOHO_WORKDRIVE_API || "https://www.zohoapis.com/workdrive/api/v1";
@@ -60,7 +61,7 @@ const getAccessToken = async (forceRefresh = false) => {
 
 const doUploadAttempt = async (buffer, uniqueFileName, accessToken) => {
   const form = new FormData();
-  form.append("content", new Blob([buffer], { type: "application/pdf" }), uniqueFileName);
+  form.append("content", new Blob([buffer], { type: mimeOfKind(kindOfFileName(uniqueFileName)) }), uniqueFileName);
   form.append("parent_id", FOLDER_ID);
   form.append("override-name-exist", "false");
 
@@ -111,7 +112,7 @@ const verifyUpload = async (resourceId, accessToken) => {
 };
 
 /**
- * Uploads the original PDF to the permanent WorkDrive archive folder, then
+ * Uploads the original file (PDF or Word) to the permanent WorkDrive archive folder, then
  * verifies it landed. Verified against the live API: the upload response's
  * file identifier is data[0].attributes.resource_id — a different shape
  * from the normal GET /files/{id} response, which uses a top-level `id`.
@@ -132,7 +133,7 @@ const verifyUpload = async (resourceId, accessToken) => {
  * call this again later to retry just the archive step (see documents.status
  * `rag_completed`).
  */
-export const uploadOriginalPdf = async (buffer, fileName, documentId) => {
+export const uploadOriginalFile = async (buffer, fileName, documentId) => {
   if (!FOLDER_ID) {
     throw new Error("WORKDRIVE_FOLDER_ID is not configured");
   }

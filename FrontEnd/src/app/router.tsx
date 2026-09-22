@@ -10,6 +10,7 @@ const EngineerQueueScreen = lazy(
 );
 const SignInScreen = lazy(() => import("@/features/auth/SignInScreen"));
 const RagSearchScreen = lazy(() => import("@/features/ragSearch/RagSearchScreen"));
+const AdminKnowledgeScreen = lazy(() => import("@/features/admin/AdminKnowledgeScreen"));
 
 function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<SkeletonRouteFallback />}>{element}</Suspense>;
@@ -29,6 +30,7 @@ const routes: RouteObject[] = [
   { path: "/engineer", element: lazyRoute(<EngineerQueueScreen />) },
   { path: "/sign-in", element: lazyRoute(<SignInScreen />) },
   { path: "/search", element: lazyRoute(<RagSearchScreen />) },
+  { path: "/admin/knowledge", element: lazyRoute(<AdminKnowledgeScreen />) },
   { path: "*", element: <Navigate to="/" replace /> },
 ];
 
