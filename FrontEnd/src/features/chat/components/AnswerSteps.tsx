@@ -36,21 +36,18 @@ export function AnswerSteps({
 
         return (
           // minmax(0,1fr), not 1fr: a long citation chip must shrink and truncate, not widen the column past the screen.
-          <li
-            key={step.n}
-            className={cn(numbered && "grid grid-cols-[2rem_minmax(0,1fr)] gap-x-3")}
-          >
-            {numbered ? (
-              <span
-                className={cn(
-                  "flex size-8 items-center justify-center rounded-full text-sm font-semibold tabular-nums",
-                  step.isSafetyStep ? "bg-safety-bg text-safety-fg" : "bg-secondary text-secondary-foreground",
-                )}
-                aria-hidden
-              >
-                {step.n}
-              </span>
-            ) : null}
+          <li key={step.n} className="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-x-4">
+            <span
+              className={cn(
+                "flex size-9 items-center justify-center rounded-lg text-step font-semibold tabular-nums",
+                step.isSafetyStep
+                  ? "bg-safety-bg text-safety-fg"
+                  : "bg-secondary text-secondary-foreground",
+              )}
+              aria-hidden
+            >
+              {step.n}
+            </span>
 
             <div className="min-w-0 space-y-3">
               {step.isSafetyStep ? (

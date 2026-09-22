@@ -11,27 +11,27 @@ interface PageShellProps {
   dock?: ReactNode;
   children: ReactNode;
   className?: string;
-  /** Desk screens (admin) use the width; chat screens keep the centred reading column. */
+  /** Desk screens (admin) use the width; phone screens keep the single reading column. */
   wide?: boolean;
-  /** No sidebar or top bar — for the sign-in page. */
-  bare?: boolean;
 }
 
 /**
  * The app shell every screen shares: a collapsible sidebar (a sheet on phones),
  * a slim top bar, a scrolling content column and an optional pinned dock.
  */
-export function PageShell({ header, dock, children, className, wide = false, bare = false }: PageShellProps) {
-  const column = wide ? "max-w-5xl" : "max-w-3xl";
-
-  const content = (
-    <>
+export function PageShell({ header, dock, children, className, wide = false }: PageShellProps) {
+  return (
+    <div className="bg-background flex h-dvh flex-col">
       <OfflineBanner />
-      {header ? <header className="border-border shrink-0 border-b">{header}</header> : null}
+      {header ? (
+        <header className="border-border bg-background/95 supports-[backdrop-filter]:bg-background/80 shrink-0 border-b backdrop-blur">
+          {header}
+        </header>
+      ) : null}
 
-      <div className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain", className)}>
-        <div className={cn("mx-auto w-full px-4 py-4 sm:px-6", column)}>{children}</div>
-      </div>
+      <main className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain", className)}>
+        <div className={cn("mx-auto w-full px-5 py-6", wide ? "max-w-5xl" : "max-w-[42rem]")}>{children}</div>
+      </main>
 
       {dock ? (
         <div className="shrink-0">

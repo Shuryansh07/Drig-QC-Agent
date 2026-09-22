@@ -1,15 +1,6 @@
-import { useState } from "react";
-import { FileText, LoaderCircle, RotateCw, Trash2, TriangleAlert } from "lucide-react";
+import { FileText, RotateCw, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { isInFlight, kindOfFile, type AdminDocument, type IngestStatus } from "../types";
 
@@ -37,12 +28,9 @@ interface DocumentRowProps {
   document: AdminDocument;
   onRetry: (documentId: string) => void;
   retrying: boolean;
-  onDelete: (documentId: string) => Promise<unknown>;
-  deleting: boolean;
 }
 
-export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleting }: DocumentRowProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
+export function DocumentRow({ document: doc, onRetry, retrying }: DocumentRowProps) {
   const status = STATUS[doc.status];
   const inFlight = isInFlight(doc.status);
   // A Word file has no pages (the backend tracks it as one unit), so only PDFs show a page count.
@@ -102,58 +90,14 @@ export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleti
             </p>
           ) : null}
 
-          {RETRYABLE.has(doc.status) || !inFlight ? (
-            <div className="flex flex-wrap gap-2">
-              {RETRYABLE.has(doc.status) ? (
-                <Button variant="outline" size="sm" disabled={retrying} onClick={() => onRetry(doc.document_id)}>
-                  <RotateCw className={retrying ? "animate-spin" : undefined} />
-                  Retry
-                </Button>
-              ) : null}
-              {/* Not while the worker is on it: deleting under it would leave it half-processed. */}
-              {!inFlight ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={deleting}
-                  onClick={() => setConfirmOpen(true)}
-                  className="text-destructive hover:text-destructive"
-                >
-                  <Trash2 />
-                  Delete
-                </Button>
-              ) : null}
-            </div>
+          {RETRYABLE.has(doc.status) ? (
+            <Button variant="outline" size="sm" disabled={retrying} onClick={() => onRetry(doc.document_id)}>
+              <RotateCw className={retrying ? "animate-spin" : undefined} />
+              Retry
+            </Button>
           ) : null}
         </div>
       </div>
-
-      <Dialog open={confirmOpen} onOpenChange={(open) => !deleting && setConfirmOpen(open)}>
-        <DialogContent showCloseButton={!deleting}>
-          <DialogHeader>
-            <DialogTitle>Delete this document?</DialogTitle>
-            <DialogDescription className="break-words">
-              <span className="text-foreground font-medium">{doc.title}</span> will be removed
-              {doc.child_chunks > 0 ? `, along with its ${plural(doc.child_chunks, "search chunk")} and their vectors` : ""}
-              {doc.archived ? ", and the archived original moves to the WorkDrive trash" : ""}. The assistant will stop
-              using it straight away. This can&apos;t be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" disabled={deleting} onClick={() => setConfirmOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleting}
-              onClick={() => void onDelete(doc.document_id).then(() => setConfirmOpen(false), () => undefined)}
-            >
-              {deleting ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
-              {deleting ? "Deleting…" : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </li>
   );
 }

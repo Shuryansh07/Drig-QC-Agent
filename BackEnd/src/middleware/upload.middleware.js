@@ -5,10 +5,11 @@ import multer from "multer";
 import { kindOfFileName, extensionOfKind, unsupportedTypeMessage } from "../services/chunking/documentTypes.js";
 
 // Uploaded files (PDF or Word .docx) are streamed straight to disk instead of held fully in Node's
-// memory — matters once files get larger than a few MB. This local file is only a
-// staging copy inside the API process: enqueueIngestion() uploads it to S3 (the
-// worker reads it from there, since it may be a different container) and then
-// deletes it. Anything left here was abandoned by a crash; the worker sweeps old files.
+// memory — matters once files get larger than a few MB. The temp file is not
+// permanent storage: it's deleted once RAG processing + WorkDrive upload both
+// succeed (see ragIngestion.service.js), and any file that's still here after
+// that either failed and is retryable, or was abandoned by a crash — either
+// way, the worker's startup sweep cleans up anything genuinely orphaned.
 //
 // MUST be resolved to an absolute path: multer stores the absolute path of
 // the file it writes into `documents.temp_file_path`, and the worker's

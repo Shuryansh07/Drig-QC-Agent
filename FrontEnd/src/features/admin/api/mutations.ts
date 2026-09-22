@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { logger } from "@/lib/logger";
-import type { DeleteResponse, RetryResponse, UploadResponse } from "../types";
+import type { RetryResponse, UploadResponse } from "../types";
 
 /**
  * POST /api/documents/upload (multipart, field "file"). Returns as soon as the
@@ -32,16 +32,5 @@ export function useRetryDocument() {
     mutationFn: (documentId: string) => apiFetch<RetryResponse>(`/documents/${documentId}/retry`, { method: "POST" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.adminDocuments() }),
     onError: (err) => logger.error("[admin retry] failed", err),
-  });
-}
-
-/** DELETE /api/documents/:id. Removes the document, its chunks and vectors, and the stored files. */
-export function useDeleteDocument() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: (documentId: string) => apiFetch<DeleteResponse>(`/documents/${documentId}`, { method: "DELETE" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.adminDocuments() }),
-    onError: (err) => logger.error("[admin delete] failed", err),
   });
 }
