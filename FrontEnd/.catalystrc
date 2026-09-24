@@ -1,0 +1,30 @@
+{
+  "defaults": {
+    "project": 1,
+    "env": 1
+  },
+  "actives": {
+    "project": 1,
+    "env": 1
+  },
+  "projects": [
+    {
+      "idx": 1,
+      "id": "33177000000413020",
+      "name": "QC-AIAgent",
+      "domain": {
+        "id": "10134621468",
+        "name": "qc-aiagent-919781691.development"
+      },
+      "timezone": "America/Kentucky/Monticello",
+      "env": [
+        {
+          "idx": 1,
+          "id": "919781691",
+          "name": "Development",
+          "type": 3
+        }
+      ]
+    }
+  ]
+}
