@@ -13,13 +13,13 @@ export function DeadlineNotice({ onRequestEngineer }: DeadlineNoticeProps) {
   return (
     <div
       role="status"
-      className="border-warn-border bg-warn-bg text-warn-fg rounded-xl border p-5"
+      className="border-warn-border bg-warn-bg text-warn-fg rounded-2xl border p-4 sm:p-5"
     >
       <p className="text-body font-medium">Still working on this one.</p>
       <Button
         variant="outline"
         onClick={onRequestEngineer}
-        className="bg-background mt-4 h-touch w-full text-body"
+        className="bg-background mt-3 h-11 rounded-full px-6 text-base"
       >
         Get an engineer instead
       </Button>

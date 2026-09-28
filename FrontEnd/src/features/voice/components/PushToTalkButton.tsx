@@ -14,8 +14,9 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * Bottom-centre, hold to record, full width. Voice state is announced as well as
- * animated (§10) — a technician may be looking at the vehicle, not the phone.
+ * A round mic button inside the composer. Hold to record, release to send. Voice
+ * state is announced as well as animated (§10) — a technician may be looking at
+ * the vehicle, not the phone.
  */
 export function PushToTalkButton({ disabled }: PushToTalkButtonProps) {
   const { status, levels, elapsedMs, error } = useAppSelector((s) => s.voice);
@@ -29,7 +30,7 @@ export function PushToTalkButton({ disabled }: PushToTalkButtonProps) {
       : "Hold to speak";
 
   return (
-    <div className="space-y-2">
+    <div className="flex min-w-0 items-center gap-2">
       <button
         type="button"
         disabled={disabled || status === "transcribing"}
@@ -38,33 +39,28 @@ export function PushToTalkButton({ disabled }: PushToTalkButtonProps) {
         onPointerLeave={() => recording && void stop()}
         aria-label={label}
         className={cn(
-          "flex h-touch-lg w-full items-center justify-center gap-3 rounded-xl",
-          "text-step font-semibold transition-colors",
-          // Hold-to-record must not double as a scroll gesture or pop the
-          // iOS callout menu.
+          "flex h-10 shrink-0 items-center justify-center gap-2 rounded-full transition-colors",
+          // Hold-to-record must not double as a scroll gesture or pop the iOS callout menu.
           "touch-none select-none [-webkit-touch-callout:none]",
           "disabled:opacity-60",
           recording
-            ? "bg-destructive text-destructive-foreground"
-            : "bg-primary text-primary-foreground active:brightness-95",
+            ? "bg-destructive text-destructive-foreground px-4"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground w-10",
         )}
       >
         {recording ? (
           <>
-            <Square className="size-5 shrink-0 fill-current" aria-hidden />
+            <Square className="size-4 shrink-0 fill-current" aria-hidden />
             <Waveform levels={levels} />
-            <span className="tabular-nums">{formatElapsed(elapsedMs)}</span>
+            <span className="text-sm tabular-nums">{formatElapsed(elapsedMs)}</span>
           </>
         ) : (
-          <>
-            <Mic className="size-6 shrink-0" aria-hidden />
-            {status === "transcribing" ? "Writing it down" : "Hold to speak"}
-          </>
+          <Mic className="size-5 shrink-0" aria-hidden />
         )}
       </button>
 
-      <p role="status" className="text-micro text-muted-foreground min-h-5 text-center">
-        {error ?? (recording ? "Release to send" : "")}
+      <p role="status" className="text-muted-foreground min-w-0 truncate text-sm">
+        {error ?? (recording ? "Release to send" : status === "transcribing" ? "Writing it down…" : "")}
       </p>
     </div>
   );

@@ -17,16 +17,17 @@ const OPTIONS: Array<{ value: Resolution; label: string }> = [
  *  evaluation loop is built on, so it must never take more than one tap. */
 export function ResolutionBar({ value, onChange }: ResolutionBarProps) {
   return (
-    <div className="space-y-3">
-      <p className="text-body font-medium">Did that sort it?</p>
-      <div role="group" aria-label="Did that sort it?" className="grid grid-cols-3 gap-2">
+    <div className="flex flex-wrap items-center gap-2 pt-1">
+      <p className="text-muted-foreground mr-1 text-sm font-medium">Did that sort it?</p>
+      <div role="group" aria-label="Did that sort it?" className="flex gap-2">
         {OPTIONS.map((option) => (
           <Button
             key={option.value}
             variant={value === option.value ? "default" : "outline"}
+            size="sm"
             aria-pressed={value === option.value}
             onClick={() => onChange(option.value)}
-            className={cn("h-touch text-body", value === option.value && "font-semibold")}
+            className={cn("h-9 rounded-full px-4 text-sm", value === option.value && "font-semibold")}
           >
             {option.label}
           </Button>

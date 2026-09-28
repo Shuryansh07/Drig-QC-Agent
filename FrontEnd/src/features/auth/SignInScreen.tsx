@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 export default function SignInScreen() {
   return (
     <PageShell
+      bare
       dock={
         <Button disabled className="h-touch-lg w-full text-step">
           Sign in

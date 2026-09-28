@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import crypto from "node:crypto";
 import { extractDocumentBlocks } from "./chunking/pdfStructure.js";
 import { extractDocxBlocks } from "./chunking/docxStructure.js";
-import { kindOfFileName, describeKind, bufferMatchesKind, unsupportedTypeMessage } from "./chunking/documentTypes.js";
+import { kindOfFileName, describeKind, mimeOfKind, bufferMatchesKind, unsupportedTypeMessage } from "./chunking/documentTypes.js";
+import * as storage from "./storage.service.js";
 import { buildChunkTree } from "./chunking/chunker.js";
 import { enrichWithVisuals } from "./chunking/visualEnrichment.js";
 import * as figures from "../db/images.js";
@@ -25,6 +27,7 @@ const EMBED_GROUP_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || "20", 10) 
 const GROUP_CONCURRENCY = parseInt(process.env.PAGE_CONCURRENCY || "3", 10);
 const REUSED_INSERT_BATCH = 200;
 
+// The API's local staging copy from multer. Only lives until it is in S3.
 const deleteTempFile = async (filePath, log) => {
   if (!filePath) return;
   try {
@@ -32,6 +35,17 @@ const deleteTempFile = async (filePath, log) => {
     log?.(`temp file deleted: ${filePath}`);
   } catch (err) {
     if (err.code !== "ENOENT") logger.error(`Failed to delete temp file ${filePath}`, err);
+  }
+};
+
+// The durable copy in S3. `document.tempFilePath` holds its object key.
+const deleteStoredFile = async (key, log) => {
+  if (!key) return;
+  try {
+    await storage.remove(key);
+    log?.(`stored file deleted: ${key}`);
+  } catch (err) {
+    logger.error(`Failed to delete stored file ${key}`, err);
   }
 };
 
@@ -224,7 +238,7 @@ export const processDocument = async (document) => {
     throw new Error(`Document ${document.docId} has no tempFilePath — cannot process without the original bytes`);
   }
 
-  const buffer = await fs.readFile(document.tempFilePath);
+  const buffer = await storage.getBuffer(document.tempFilePath);
   const fileName = document.title;
 
   await documents.updateIngestState(document.docId, { ingestStatus: "rag_processing" });
@@ -307,7 +321,7 @@ export const processDocument = async (document) => {
   });
 
   if (canDeleteTempFile) {
-    await deleteTempFile(document.tempFilePath, log);
+    await deleteStoredFile(document.tempFilePath, log);
   } else {
     const reason = failedPages.length > 0 ? `${failedPages.length} page(s) still failed` : "WorkDrive not yet archived";
     log(`temp file kept for retry (${reason}): ${document.tempFilePath}`);
@@ -361,7 +375,24 @@ export const enqueueIngestion = async ({ filePath, fileName }) => {
     return { documentId: existing.docId, status: existing.ingestStatus, duplicate: true };
   }
 
-  const document = await documents.createDocument({ title: fileName, contentHash: sha256, tempFilePath: filePath });
+  // Hand the bytes to the worker through S3: it may be a different container with its own disk.
+  const key = `${storage.UPLOAD_PREFIX}${path.basename(filePath)}`;
+  try {
+    await storage.putFile(key, filePath, mimeOfKind(kind));
+  } catch (err) {
+    await deleteTempFile(filePath);
+    logger.error(`[upload] could not store "${fileName}" in S3`, err);
+    throw Object.assign(new Error("Could not store the uploaded file. Try again."), { status: 502 });
+  }
+  await deleteTempFile(filePath);
+
+  let document;
+  try {
+    document = await documents.createDocument({ title: fileName, contentHash: sha256, tempFilePath: key });
+  } catch (err) {
+    await deleteStoredFile(key);
+    throw err;
+  }
   const job = await jobs.createJob({ jobType: "process_document", docId: document.docId });
 
   logger.info(`[upload] document ${document.docId} queued (job ${job.id})`);
@@ -401,11 +432,9 @@ export const enqueueRetry = async (docId) => {
     throw err;
   }
 
-  try {
-    await fs.access(document.tempFilePath);
-  } catch {
+  if (!(await storage.exists(document.tempFilePath))) {
     const err = new Error(
-      `Temp file missing on disk (${document.tempFilePath}) — cannot retry without the original bytes. Please re-upload.`
+      `The stored original (${document.tempFilePath}) is missing — cannot retry without the original bytes. Please re-upload.`
     );
     err.status = 410;
     throw err;

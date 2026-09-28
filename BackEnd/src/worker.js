@@ -12,6 +12,7 @@ import * as documents from "./db/documents.js";
 import { processDocument } from "./services/ragIngestion.service.js";
 import { TEMP_UPLOAD_DIR } from "./middleware/upload.middleware.js";
 import { pool } from "./db/pool.js";
+import * as storage from "./services/storage.service.js";
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const JOB_POLL_INTERVAL_MS = parseInt(process.env.JOB_POLL_INTERVAL_MS || "1000", 10);
@@ -139,6 +140,31 @@ const cleanupOrphanedTempFiles = async () => {
   if (removed > 0) logger.info(`[worker] cleaned up ${removed} orphaned temp upload file(s)`);
 };
 
+/**
+ * Same idea as above, for the S3 copies of uploads: delete objects under the
+ * upload prefix that no document row points at (the API crashed between the S3
+ * put and creating the row) and are older than 10 minutes. Never fatal: a
+ * missing bucket setting or permission must not stop the worker processing jobs.
+ */
+const cleanupOrphanedStoredFiles = async () => {
+  try {
+    const objects = await storage.list(storage.UPLOAD_PREFIX);
+    const { rows } = await pool.query(`select temp_file_path from kb_document_ingest_state where temp_file_path is not null`);
+    const referenced = new Set(rows.map((r) => r.temp_file_path));
+
+    const TEN_MINUTES = 10 * 60 * 1000;
+    let removed = 0;
+    for (const { key, lastModified } of objects) {
+      if (referenced.has(key) || Date.now() - lastModified.getTime() <= TEN_MINUTES) continue;
+      await storage.remove(key);
+      removed++;
+    }
+    if (removed > 0) logger.info(`[worker] cleaned up ${removed} orphaned upload(s) in S3`);
+  } catch (err) {
+    logger.error("[worker] S3 orphan cleanup failed (continuing)", err);
+  }
+};
+
 const shutdown = async (signal) => {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -162,6 +188,7 @@ const start = async () => {
 
   await recoverStaleJobs(STALE_JOB_TIMEOUT_MS);
   await cleanupOrphanedTempFiles();
+  await cleanupOrphanedStoredFiles();
 
   // Periodic sweep, not just at startup — a job can go stale at any point
   // during a long-running worker's life (e.g. the worker itself is killed

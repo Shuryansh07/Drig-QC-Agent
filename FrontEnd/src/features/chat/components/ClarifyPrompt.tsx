@@ -16,9 +16,9 @@ export function ClarifyPrompt({ clarify, onAnswer, onSkip }: ClarifyPromptProps)
   return (
     <section
       aria-labelledby={`clarify-${clarify.slot}`}
-      className="border-neutral-note-border bg-neutral-note-bg rounded-xl border p-5"
+      className="border-neutral-note-border bg-neutral-note-bg rounded-2xl border p-4 sm:p-5"
     >
-      <h2 id={`clarify-${clarify.slot}`} className="text-lead font-semibold text-balance">
+      <h2 id={`clarify-${clarify.slot}`} className="text-step font-semibold text-balance">
         {clarify.question}
       </h2>
 
@@ -28,10 +28,10 @@ export function ClarifyPrompt({ clarify, onAnswer, onSkip }: ClarifyPromptProps)
             key={option.value}
             variant="outline"
             onClick={() => onAnswer(option.value)}
-            className="bg-background h-auto min-h-touch-lg justify-start px-5 py-4 text-left whitespace-normal"
+            className="bg-background h-auto min-h-14 justify-start rounded-xl px-4 py-3 text-left whitespace-normal"
           >
             <span className="flex flex-col items-start gap-1">
-              <span className="text-step font-medium">{option.label}</span>
+              <span className="text-body font-medium">{option.label}</span>
               {option.hint ? (
                 <span className="text-micro text-muted-foreground font-normal">
                   {option.hint}
@@ -46,7 +46,7 @@ export function ClarifyPrompt({ clarify, onAnswer, onSkip }: ClarifyPromptProps)
         <Button
           variant="ghost"
           onClick={onSkip}
-          className="text-muted-foreground mt-4 h-touch w-full text-body"
+          className="text-muted-foreground mt-3 h-11 rounded-full text-base"
         >
           I don't know
         </Button>

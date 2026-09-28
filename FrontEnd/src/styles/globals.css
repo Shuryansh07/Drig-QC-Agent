@@ -19,32 +19,32 @@
 :root {
   --radius: 0.625rem;
 
-  --background: oklch(0.99 0 0);
-  --foreground: oklch(0.22 0 0);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.2 0 0);
 
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0 0);
+  --card-foreground: oklch(0.2 0 0);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0 0);
+  --popover-foreground: oklch(0.2 0 0);
 
-  --primary: oklch(0.42 0.115 255);
-  --primary-foreground: oklch(0.99 0 0);
+  --primary: oklch(0.2 0 0);
+  --primary-foreground: oklch(0.985 0 0);
 
-  --secondary: oklch(0.95 0.006 255);
-  --secondary-foreground: oklch(0.28 0.03 255);
+  --secondary: oklch(0.955 0 0);
+  --secondary-foreground: oklch(0.2 0 0);
 
-  --muted: oklch(0.96 0.003 255);
+  --muted: oklch(0.96 0 0);
   --muted-foreground: oklch(0.45 0 0);
 
-  --accent: oklch(0.94 0.02 255);
-  --accent-foreground: oklch(0.28 0.04 255);
+  --accent: oklch(0.94 0 0);
+  --accent-foreground: oklch(0.2 0 0);
 
   --destructive: oklch(0.51 0.19 27);
   --destructive-foreground: oklch(0.99 0 0);
 
-  --border: oklch(0.88 0.004 255);
-  --input: oklch(0.84 0.004 255);
-  --ring: oklch(0.42 0.115 255);
+  --border: oklch(0.91 0 0);
+  --input: oklch(0.88 0 0);
+  --ring: oklch(0.45 0 0);
 
   /* Domain tokens — not part of shadcn's set */
   --answer-fg: oklch(0.22 0 0);
@@ -53,40 +53,50 @@
   --warn-border: oklch(0.78 0.11 82);
   --safety-bg: oklch(0.96 0.03 27);
   --safety-fg: oklch(0.42 0.17 27);
-  --neutral-note-bg: oklch(0.96 0.003 255);
-  --neutral-note-border: oklch(0.86 0.006 255);
-  --offline-bg: oklch(0.93 0.01 255);
-  --citation-bg: oklch(0.95 0.02 255);
-  --citation-fg: oklch(0.34 0.07 255);
+  --neutral-note-bg: oklch(0.965 0 0);
+  --neutral-note-border: oklch(0.9 0 0);
+  --offline-bg: oklch(0.94 0 0);
+  --citation-bg: oklch(0.95 0 0);
+  --citation-fg: oklch(0.3 0 0);
+
+  /* shadcn sidebar */
+  --sidebar: oklch(0.975 0 0);
+  --sidebar-foreground: oklch(0.2 0 0);
+  --sidebar-primary: oklch(0.2 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.93 0 0);
+  --sidebar-accent-foreground: oklch(0.2 0 0);
+  --sidebar-border: oklch(0.92 0 0);
+  --sidebar-ring: oklch(0.45 0 0);
 }
 
 .dark {
-  --background: oklch(0.17 0.005 255);
-  --foreground: oklch(0.97 0 0);
+  --background: oklch(0.21 0 0);
+  --foreground: oklch(0.96 0 0);
 
-  --card: oklch(0.22 0.006 255);
-  --card-foreground: oklch(0.97 0 0);
-  --popover: oklch(0.22 0.006 255);
-  --popover-foreground: oklch(0.97 0 0);
+  --card: oklch(0.25 0 0);
+  --card-foreground: oklch(0.96 0 0);
+  --popover: oklch(0.25 0 0);
+  --popover-foreground: oklch(0.96 0 0);
 
-  --primary: oklch(0.72 0.13 250);
-  --primary-foreground: oklch(0.17 0.02 255);
+  --primary: oklch(0.96 0 0);
+  --primary-foreground: oklch(0.2 0 0);
 
-  --secondary: oklch(0.28 0.015 255);
-  --secondary-foreground: oklch(0.97 0 0);
+  --secondary: oklch(0.29 0 0);
+  --secondary-foreground: oklch(0.96 0 0);
 
-  --muted: oklch(0.27 0.01 255);
+  --muted: oklch(0.28 0 0);
   --muted-foreground: oklch(0.76 0 0);
 
-  --accent: oklch(0.3 0.025 255);
-  --accent-foreground: oklch(0.97 0 0);
+  --accent: oklch(0.31 0 0);
+  --accent-foreground: oklch(0.96 0 0);
 
   --destructive: oklch(0.68 0.18 25);
   --destructive-foreground: oklch(0.17 0 0);
 
-  --border: oklch(0.33 0.008 255);
-  --input: oklch(0.38 0.008 255);
-  --ring: oklch(0.72 0.13 250);
+  --border: oklch(0.32 0 0);
+  --input: oklch(0.34 0 0);
+  --ring: oklch(0.7 0 0);
 
   --answer-fg: oklch(0.97 0 0);
   --warn-bg: oklch(0.3 0.05 80);
@@ -94,11 +104,21 @@
   --warn-border: oklch(0.45 0.09 82);
   --safety-bg: oklch(0.3 0.07 25);
   --safety-fg: oklch(0.9 0.09 30);
-  --neutral-note-bg: oklch(0.24 0.008 255);
-  --neutral-note-border: oklch(0.34 0.01 255);
-  --offline-bg: oklch(0.28 0.012 255);
-  --citation-bg: oklch(0.3 0.03 255);
-  --citation-fg: oklch(0.86 0.06 250);
+  --neutral-note-bg: oklch(0.25 0 0);
+  --neutral-note-border: oklch(0.34 0 0);
+  --offline-bg: oklch(0.28 0 0);
+  --citation-bg: oklch(0.3 0 0);
+  --citation-fg: oklch(0.9 0 0);
+
+  /* shadcn sidebar */
+  --sidebar: oklch(0.17 0 0);
+  --sidebar-foreground: oklch(0.96 0 0);
+  --sidebar-primary: oklch(0.96 0 0);
+  --sidebar-primary-foreground: oklch(0.2 0 0);
+  --sidebar-accent: oklch(0.27 0 0);
+  --sidebar-accent-foreground: oklch(0.96 0 0);
+  --sidebar-border: oklch(0.27 0 0);
+  --sidebar-ring: oklch(0.7 0 0);
 }
 
 @theme inline {
@@ -153,6 +173,15 @@
   --color-offline-bg: var(--offline-bg);
   --color-citation-bg: var(--citation-bg);
   --color-citation-fg: var(--citation-fg);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

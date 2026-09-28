@@ -28,11 +28,11 @@ export function CitationChip({ citation, unavailable, onOpen }: CitationChipProp
       disabled={unavailable}
       onClick={() => onOpen(citation.chunkId)}
       className={cn(
-        "inline-flex min-h-touch max-w-full items-center gap-2 rounded-lg px-3.5 py-2 text-left",
-        "text-micro font-medium transition-colors",
+        "inline-flex min-h-10 max-w-full items-center gap-2 rounded-full border px-3.5 py-1.5 text-left",
+        "text-sm font-medium transition-colors",
         unavailable
           ? "bg-muted text-muted-foreground cursor-not-allowed"
-          : "bg-citation-bg text-citation-fg active:brightness-95",
+          : "bg-citation-bg text-citation-fg hover:bg-accent active:brightness-95",
       )}
     >
       <Icon className="size-4 shrink-0" aria-hidden />

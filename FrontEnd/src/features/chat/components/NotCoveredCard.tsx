@@ -14,11 +14,11 @@ interface NotCoveredCardProps {
  */
 export function NotCoveredCard({ info, onRequestEngineer }: NotCoveredCardProps) {
   return (
-    <section className="border-neutral-note-border bg-neutral-note-bg rounded-xl border p-5">
-      <p className="text-step text-answer-fg">{info.message}</p>
+    <section className="border-neutral-note-border bg-neutral-note-bg rounded-2xl border p-4 sm:p-5">
+      <p className="text-body text-answer-fg">{info.message}</p>
 
       {info.coveredTopics.length > 0 ? (
-        <div className="mt-5">
+        <div className="mt-4">
           <p className="text-body font-semibold">What I do have for this vehicle</p>
           <ul className="text-body text-muted-foreground mt-2 space-y-1.5">
             {info.coveredTopics.map((topic) => (
@@ -30,10 +30,7 @@ export function NotCoveredCard({ info, onRequestEngineer }: NotCoveredCardProps)
         </div>
       ) : null}
 
-      <Button
-        onClick={onRequestEngineer}
-        className="mt-6 h-touch-lg w-full text-step"
-      >
+      <Button onClick={onRequestEngineer} className="mt-5 h-11 rounded-full px-6 text-base">
         Ask an engineer
       </Button>
     </section>
