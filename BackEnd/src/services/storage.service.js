@@ -56,6 +56,18 @@ export const putFile = async (key, localPath, contentType) => {
       await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
     }
   }
+/** Streams a local file to S3 under `key`. */
+export const putFile = async (key, localPath, contentType) => {
+  const { size } = await fs.promises.stat(localPath);
+  await s3().send(
+    new PutObjectCommand({
+      Bucket: bucket(),
+      Key: key,
+      Body: fs.createReadStream(localPath),
+      ContentLength: size,
+      ...(contentType && { ContentType: contentType }),
+    })
+  );
 };
 
 /** Whole object as a Buffer. Throws an error with code ENOENT when the key does not exist. */
