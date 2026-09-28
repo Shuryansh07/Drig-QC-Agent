@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { logger } from "../utils/logger.js";
+import { buildPgConfig } from "./pgConfig.js";
 
 // Portability rule P1 (Plan/DATABASE.md): a plain Postgres driver only. No
 // supabase-js, no PostgREST. Rule P6: the app connects as drig_app on every
@@ -31,7 +32,10 @@ if (parsed.port === "6543") {
   );
 }
 
-export const pool = new Pool({ connectionString, max: 10 });
+export const pool = new Pool({
+  ...buildPgConfig(connectionString, (msg) => logger.warn(msg)),
+  max: 10,
+});
 
 pool.on("error", (err) => {
   logger.error("Unexpected error on idle pg client", err);
