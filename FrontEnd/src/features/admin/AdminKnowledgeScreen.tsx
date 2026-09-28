@@ -167,11 +167,6 @@ export default function AdminKnowledgeScreen() {
               ))}
             </ul>
           )}
-
-          <p className="text-micro text-muted-foreground pt-2">
-            Processing runs in the background worker (<code>npm run worker</code> in BackEnd). If a document stays
-            &ldquo;Queued&rdquo;, the worker isn&apos;t running.
-          </p>
         </section>
       </div>
     </PageShell>
