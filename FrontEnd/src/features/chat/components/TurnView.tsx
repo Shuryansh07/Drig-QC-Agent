@@ -4,6 +4,7 @@ import { ClarifyPrompt } from "@/features/chat/components/ClarifyPrompt";
 import { NotCoveredCard } from "@/features/chat/components/NotCoveredCard";
 import { ConflictCard } from "@/features/chat/components/ConflictCard";
 import { ResolutionBar } from "@/features/chat/components/ResolutionBar";
+import { AssistantMessage } from "@/features/chat/components/AssistantMessage";
 
 interface TurnViewProps {
   turn: Turn;
@@ -25,14 +26,16 @@ export function TurnView({
 }: TurnViewProps) {
   if (turn.role === "technician") {
     return (
-      <p className="text-body text-muted-foreground border-border border-l-2 py-1 pl-4">
-        {turn.text}
-      </p>
+      <div className="flex justify-end">
+        <p className="bg-secondary text-foreground text-body max-w-[85%] rounded-3xl px-5 py-2.5 break-words whitespace-pre-wrap">
+          {turn.text}
+        </p>
+      </div>
     );
   }
 
   return (
-    <article className="space-y-6">
+    <AssistantMessage>
       {turn.clarify ? (
         <ClarifyPrompt
           clarify={turn.clarify}
@@ -62,7 +65,7 @@ export function TurnView({
       ) : null}
 
       {turn.durationMs !== undefined ? (
-        <p className="text-micro text-muted-foreground" role="status">
+        <p className="text-muted-foreground text-sm" role="status">
           Answered in {turn.durationMs}ms
         </p>
       ) : null}
@@ -70,6 +73,6 @@ export function TurnView({
       {turn.gateOutcome === "answered" ? (
         <ResolutionBar value={turn.resolution} onChange={onResolution} />
       ) : null}
-    </article>
+    </AssistantMessage>
   );
 }

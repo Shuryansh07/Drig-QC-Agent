@@ -1,43 +1,60 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { OfflineBanner } from "@/components/common/OfflineBanner";
+import { AppSidebar } from "@/components/common/AppSidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
 interface PageShellProps {
   /** Sits above the scroll area. Keep it to one line — screen space is answer space. */
   header?: ReactNode;
-  /** The thumb zone. Primary actions live here and nowhere else (§1). */
+  /** Pinned to the bottom of the page, e.g. the chat composer. */
   dock?: ReactNode;
   children: ReactNode;
   className?: string;
-  /** Desk screens (admin) use the width; phone screens keep the single reading column. */
+  /** Desk screens (admin) use the width; chat screens keep the centred reading column. */
   wide?: boolean;
+  /** No sidebar or top bar — for the sign-in page. */
+  bare?: boolean;
 }
 
 /**
- * One column, full height, with a fixed dock in the bottom third. Every screen
- * uses this so the primary action is always in the same place under the thumb.
+ * The app shell every screen shares: a collapsible sidebar (a sheet on phones),
+ * a slim top bar, a scrolling content column and an optional pinned dock.
  */
-export function PageShell({ header, dock, children, className, wide = false }: PageShellProps) {
-  return (
-    <div className="bg-background flex h-dvh flex-col">
-      <OfflineBanner />
-      {header ? (
-        <header className="border-border bg-background/95 supports-[backdrop-filter]:bg-background/80 shrink-0 border-b backdrop-blur">
-          {header}
-        </header>
-      ) : null}
+export function PageShell({ header, dock, children, className, wide = false, bare = false }: PageShellProps) {
+  const column = wide ? "max-w-5xl" : "max-w-3xl";
 
-      <main className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain", className)}>
-        <div className={cn("mx-auto w-full px-5 py-6", wide ? "max-w-5xl" : "max-w-[42rem]")}>{children}</div>
-      </main>
+  const content = (
+    <>
+      <OfflineBanner />
+      {header ? <header className="border-border shrink-0 border-b">{header}</header> : null}
+
+      <div className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain", className)}>
+        <div className={cn("mx-auto w-full px-4 py-4 sm:px-6", column)}>{children}</div>
+      </div>
 
       {dock ? (
-        <div className="border-border bg-background shrink-0 border-t">
-          <div className="mx-auto w-full max-w-[42rem] px-5 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        <div className="shrink-0">
+          <div className={cn("mx-auto w-full px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6", column)}>
             {dock}
           </div>
         </div>
       ) : null}
-    </div>
+    </>
+  );
+
+  if (bare) return <div className="bg-background flex h-dvh flex-col">{content}</div>;
+
+  return (
+    <SidebarProvider className="h-dvh min-h-0">
+      <AppSidebar />
+      <SidebarInset className="min-h-0 min-w-0">
+        <div className="flex h-14 shrink-0 items-center gap-2 px-3">
+          <SidebarTrigger className="size-10" aria-label="Toggle sidebar" />
+          <span className="text-muted-foreground text-base font-medium">DRIG Support</span>
+        </div>
+        {content}
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

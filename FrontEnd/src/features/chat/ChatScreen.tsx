@@ -13,8 +13,14 @@ import { TranscriptPreview } from "@/features/voice/components/TranscriptPreview
 import { SourceDrawer } from "@/features/citations/components/SourceDrawer";
 import { HandoffSheet } from "@/features/handoff/components/HandoffSheet";
 import { PageShell } from "@/components/common/PageShell";
-import { EmptyState } from "@/components/common/EmptyState";
+import { Button } from "@/components/ui/button";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+
+const SUGGESTIONS = [
+  "Where should the tracking unit be mounted?",
+  "Which wire is the ignition wire?",
+  "The unit won't power on after install",
+];
 
 export default function ChatScreen() {
   const { sessionId = "" } = useParams();
@@ -48,19 +54,37 @@ export default function ChatScreen() {
           <TranscriptPreview onSend={(text) => void send(text)} />
           <ChatComposer
             value={draft}
-            disabled={busy}
+            busy={busy}
             offline={!online}
             onChange={(value) => dispatch(chatActions.draftChanged(value))}
             onSend={() => void send(draft)}
+            onStop={cancel}
           />
         </div>
       }
     >
       {turns.length === 0 && streaming === "idle" ? (
-        <EmptyState
-          title="What are you looking at?"
-          body="Tell me the vehicle and what it's doing. Say it out loud or type it — either works."
-        />
+        <div className="flex flex-col items-center gap-8 pt-[12vh] text-center">
+          <div className="space-y-2">
+            <h1 className="text-title font-semibold tracking-tight text-balance">What can I help with?</h1>
+            <p className="text-muted-foreground text-body mx-auto max-w-[42ch]">
+              Tell me the vehicle and what it's doing. Type it or say it out loud.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap justify-center gap-2">
+            {SUGGESTIONS.map((suggestion) => (
+              <Button
+                key={suggestion}
+                variant="outline"
+                onClick={() => void send(suggestion)}
+                className="h-auto rounded-full px-4 py-2 text-base font-normal whitespace-normal"
+              >
+                {suggestion}
+              </Button>
+            ))}
+          </div>
+        </div>
       ) : null}
 
       <div className="space-y-8">
@@ -83,7 +107,6 @@ export default function ChatScreen() {
           onAnswerClarify={(value) => void send(value)}
           onSkipClarify={() => void send("I don't know")}
           onRequestEngineer={openEngineer}
-          onCancel={cancel}
         />
       </div>
 

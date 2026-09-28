@@ -19,8 +19,8 @@ export function ConflictCard({
   onRequestEngineer,
 }: ConflictCardProps) {
   return (
-    <section className="border-neutral-note-border bg-neutral-note-bg rounded-xl border p-5">
-      <p className="text-step text-answer-fg">
+    <section className="border-neutral-note-border bg-neutral-note-bg rounded-2xl border p-4 sm:p-5">
+      <p className="text-body text-answer-fg">
         Two sources disagree on this. I'm not going to guess which is right.
       </p>
       <p className="text-body text-muted-foreground mt-2">{conflict.question}</p>
@@ -39,7 +39,7 @@ export function ConflictCard({
         ))}
       </div>
 
-      <Button onClick={onRequestEngineer} className="mt-6 h-touch-lg w-full text-step">
+      <Button onClick={onRequestEngineer} className="mt-5 h-11 rounded-full px-6 text-base">
         Ask an engineer to settle it
       </Button>
     </section>
