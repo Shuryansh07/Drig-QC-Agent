@@ -204,3 +204,81 @@ export const updateIngestState = async (
     await pool.query(`update kb_document set external_ref = $2 where doc_id = $1`, [docId, fields.externalRef]);
   }
 };
+
+const IN_FLIGHT_STATUSES: IngestStatus[] = ["queued", "processing", "rag_processing", "workdrive_uploading"];
+
+export class DocumentBusyError extends Error {
+  status = 409;
+}
+
+export interface DeletedDocument {
+  title: string;
+  externalRef: string | null;
+  tempFilePath: string | null;
+  chunks: number;
+  images: number;
+}
+
+/**
+ * Hard-deletes a document and everything derived from it — chunks (and so their
+ * vectors), figures, page progress, jobs — in one transaction. Returns null when
+ * the document does not exist. Refuses while the worker may be using it.
+ *
+ * Rows that only mention the chunks (citations, retrieval logs) keep their place
+ * with the chunk reference cleared, so conversation history survives; wiring
+ * rows keep their data with the document link cleared.
+ */
+export const deleteDocumentData = async (docId: string): Promise<DeletedDocument | null> => {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+
+    const { rows } = await client.query(
+      `select d.org_id, d.title, d.external_ref, s.ingest_status, s.temp_file_path
+         from kb_document d
+         join kb_document_ingest_state s on s.doc_id = d.doc_id
+        where d.doc_id = $1
+          for update of d, s`,
+      [docId]
+    );
+    const doc = rows[0];
+    if (!doc) {
+      await client.query("rollback");
+      return null;
+    }
+    if (IN_FLIGHT_STATUSES.includes(doc.ingest_status)) {
+      throw new DocumentBusyError(`Document is currently ${doc.ingest_status} — wait for it to finish before deleting it`);
+    }
+
+    const chunkIds = `select chunk_id from kb_chunk where doc_id = $1`;
+    await client.query(`update citation set chunk_id = null where chunk_id in (${chunkIds})`, [docId]);
+    await client.query(`update turn_retrieval set chunk_id = null where chunk_id in (${chunkIds})`, [docId]);
+    await client.query(`delete from kb_conflict where chunk_id_a in (${chunkIds}) or chunk_id_b in (${chunkIds})`, [docId]);
+    const images = await client.query(`delete from kb_image where doc_id = $1`, [docId]);
+    const chunks = await client.query(`delete from kb_chunk where doc_id = $1`, [docId]);
+    await client.query(`delete from kb_document_page where doc_id = $1`, [docId]);
+    await client.query(`delete from ingestion_job where doc_id = $1`, [docId]);
+    await client.query(`update wiring_entry set doc_id = null where doc_id = $1`, [docId]);
+    await client.query(`update kb_document set supersedes_doc_id = null where supersedes_doc_id = $1`, [docId]);
+    await client.query(`delete from kb_document_ingest_state where doc_id = $1`, [docId]);
+    await client.query(`delete from kb_document where doc_id = $1`, [docId]);
+    await client.query(`insert into event_log (org_id, event_type, payload) values ($1, 'document.deleted', $2::jsonb)`, [
+      doc.org_id,
+      JSON.stringify({ doc_id: docId, title: doc.title, chunks: chunks.rowCount, images: images.rowCount }),
+    ]);
+
+    await client.query("commit");
+    return {
+      title: doc.title,
+      externalRef: doc.external_ref,
+      tempFilePath: doc.temp_file_path,
+      chunks: chunks.rowCount ?? 0,
+      images: images.rowCount ?? 0,
+    };
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+};

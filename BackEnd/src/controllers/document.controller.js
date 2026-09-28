@@ -1,4 +1,4 @@
-import { enqueueIngestion, enqueueRetry } from "../services/ragIngestion.service.js";
+import { enqueueIngestion, enqueueRetry, deleteDocument } from "../services/ragIngestion.service.js";
 import * as documents from "../db/documents.js";
 import * as documentPages from "../db/documentPages.js";
 import { findLatestJobForDoc } from "../db/jobs.js";
@@ -176,5 +176,32 @@ export const getDocumentStatus = async (req, res) => {
   } catch (error) {
     logger.error("Document status error", error);
     return res.status(500).json({ success: false, message: "Failed to fetch document status" });
+  }
+};
+
+/**
+ * DELETE /api/documents/:id — removes the document, its chunks and vectors, and
+ * the stored files. 409 while the worker is still processing it.
+ */
+export const deleteDocumentController = async (req, res) => {
+  try {
+    const { id } = req.params;
+    logger.info(`[delete] requested for document ${id}`);
+
+    const result = await deleteDocument(id);
+
+    return res.status(200).json({
+      document_id: result.documentId,
+      deleted: true,
+      chunks_deleted: result.chunks,
+      figures_deleted: result.images,
+      ...(result.warnings.length > 0 && { warnings: result.warnings }),
+    });
+  } catch (error) {
+    if (error.status && error.status < 500) {
+      return res.status(error.status).json({ success: false, message: error.message });
+    }
+    logger.error("Document delete error", error);
+    return res.status(500).json({ success: false, message: "Failed to delete document" });
   }
 };
