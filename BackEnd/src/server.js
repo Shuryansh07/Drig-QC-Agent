@@ -30,6 +30,12 @@ app.get("/", (req, res) => {
   });
 });
 
+// Liveness check for the ALB target group: no DB call, so a slow/unavailable
+// database never flips this service to "unhealthy" and gets it drained.
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 // Job queue is entirely the worker's domain (src/worker.js) now — stale-job
 // recovery and temp-file cleanup happen there, not here. The API process
 // only reads queue stats for observability.
