@@ -10,7 +10,7 @@ import { enrichWithVisuals } from "./chunking/visualEnrichment.js";
 import * as figures from "../db/images.js";
 import { loadChunkParams } from "./chunking/params.js";
 import { generateEmbeddings, EMBEDDING_MODEL } from "./embedding.service.js";
-import { uploadOriginalFile } from "./workdrive.service.js";
+import { uploadOriginalFile, deleteOriginalFile } from "./workdrive.service.js";
 import { withTiming } from "../utils/timing.js";
 import { logger } from "../utils/logger.js";
 import * as documents from "../db/documents.js";
@@ -446,4 +446,45 @@ export const enqueueRetry = async (docId) => {
   logger.info(`[retry] document ${document.docId} re-queued (job ${job.id})`);
 
   return { documentId: document.docId, jobId: job.id, status: "queued" };
+};
+
+/**
+ * Deletes a document for good: its chunks and vectors and every other row derived
+ * from it (one DB transaction), then the S3 copy and the WorkDrive original.
+ * The database goes first: once it commits the document can no longer be
+ * searched or cited, so a failure cleaning up files afterwards leaves no visible
+ * trace and comes back as a warning instead of an error.
+ */
+export const deleteDocument = async (docId) => {
+  const removed = await documents.deleteDocumentData(docId);
+  if (!removed) {
+    throw Object.assign(new Error("Document not found"), { status: 404 });
+  }
+
+  const warnings = [];
+
+  if (removed.tempFilePath) {
+    try {
+      await storage.remove(removed.tempFilePath);
+    } catch (err) {
+      logger.error(`[delete ${docId}] could not remove S3 copy ${removed.tempFilePath}`, err);
+      warnings.push("The temporary upload copy could not be removed from S3.");
+    }
+  }
+
+  if (removed.externalRef && !removed.externalRef.startsWith("upload:")) {
+    try {
+      await deleteOriginalFile(removed.externalRef);
+    } catch (err) {
+      logger.error(`[delete ${docId}] could not trash WorkDrive file ${removed.externalRef}`, err);
+      warnings.push("The archived original could not be removed from WorkDrive. Delete it there manually.");
+    }
+  }
+
+  logger.info(
+    `[delete ${docId}] "${removed.title}" deleted (${removed.chunks} chunks, ${removed.images} figures)` +
+      (warnings.length ? ` with ${warnings.length} warning(s)` : "")
+  );
+
+  return { documentId: docId, title: removed.title, chunks: removed.chunks, images: removed.images, warnings };
 };

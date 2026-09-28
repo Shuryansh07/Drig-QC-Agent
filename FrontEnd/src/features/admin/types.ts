@@ -83,3 +83,12 @@ export const unsupportedFileMessage = (name: string): string =>
   name.toLowerCase().endsWith(".doc")
     ? "Old .doc files aren't supported. Save it as .docx in Word and upload that."
     : "Only PDF and Word (.docx) files can be uploaded.";
+
+export interface DeleteResponse {
+  document_id: string;
+  deleted: boolean;
+  chunks_deleted: number;
+  figures_deleted: number;
+  /** Cleanup that failed after the document itself was removed, e.g. the WorkDrive original. */
+  warnings?: string[];
+}

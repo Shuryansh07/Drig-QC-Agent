@@ -164,3 +164,34 @@ export const uploadOriginalFile = async (buffer, fileName, documentId) => {
     { maxRetries: MAX_RETRIES }
   );
 };
+
+const trashAttempt = (fileId, accessToken) =>
+  fetchWithTimeout(`${API_BASE}/files/${fileId}`, {
+    method: "PATCH",
+    headers: { Authorization: `Zoho-oauthtoken ${accessToken}`, "Content-Type": "application/vnd.api+json" },
+    // status 51 = move to the WorkDrive trash, which keeps it recoverable for a while.
+    body: JSON.stringify({ data: { attributes: { status: "51" }, type: "files" } }),
+  });
+
+/** Moves an archived original to the WorkDrive trash. A file that is already gone counts as done. */
+export const deleteOriginalFile = async (fileId) =>
+  retryWithBackoff(
+    `WorkDrive trash (${fileId})`,
+    async () => {
+      let response = await withTiming(`WorkDrive trash (${fileId})`, async () =>
+        trashAttempt(fileId, await getAccessToken())
+      );
+      if (response.status === 401) {
+        logger.warn("WorkDrive trash got 401 (stale token) — refreshing and retrying once");
+        response = await trashAttempt(fileId, await getAccessToken(true));
+      }
+      if (response.status === 404) return;
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw Object.assign(new Error(`WorkDrive trash failed (${response.status}): ${JSON.stringify(data)}`), {
+          status: response.status,
+        });
+      }
+    },
+    { maxRetries: MAX_RETRIES }
+  );

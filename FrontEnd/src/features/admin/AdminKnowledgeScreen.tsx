@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api-client";
 import { useAdminDocuments } from "./api/queries";
-import { useRetryDocument, useUploadDocument } from "./api/mutations";
+import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mutations";
 import { UploadDropzone } from "./components/UploadDropzone";
 import { DocumentRow } from "./components/DocumentRow";
 import { MAX_UPLOAD_BYTES, kindOfFile, unsupportedFileMessage } from "./types";
@@ -34,6 +34,7 @@ export default function AdminKnowledgeScreen() {
   const { data: documents, isPending, error, refetch } = useAdminDocuments();
   const upload = useUploadDocument();
   const retry = useRetryDocument();
+  const remove = useDeleteDocument();
 
   const patchNotice = (id: string, patch: Partial<UploadNotice>) =>
     setNotices((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)));
@@ -78,7 +79,21 @@ export default function AdminKnowledgeScreen() {
     });
   };
 
+  // Returns the promise so the confirm dialog stays open when the delete is refused.
+  const handleDelete = (documentId: string) =>
+    remove.mutateAsync(documentId).then(
+      (result) => {
+        toast.success("Document deleted");
+        for (const warning of result.warnings ?? []) toast.warning(warning);
+      },
+      (err) => {
+        toast.error(errorMessage(err));
+        throw err;
+      },
+    );
+
   const retryingId = retry.isPending ? retry.variables : undefined;
+  const deletingId = remove.isPending ? remove.variables : undefined;
 
   return (
     <PageShell
@@ -163,6 +178,8 @@ export default function AdminKnowledgeScreen() {
                   document={doc}
                   onRetry={handleRetry}
                   retrying={retryingId === doc.document_id}
+                  onDelete={handleDelete}
+                  deleting={deletingId === doc.document_id}
                 />
               ))}
             </ul>
