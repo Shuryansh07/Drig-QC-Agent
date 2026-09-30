@@ -10,6 +10,7 @@ import { queryKeys } from "@/lib/query-client";
 import { isOnline } from "@/lib/offline";
 import { logger } from "@/lib/logger";
 import type { AnswerStep, Citation, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
+import { uuid } from "@/lib/uuid";
 
 // No auth/tenant selection UI exists yet (AuthProvider is a stub — see
 // features/auth/AuthProvider.tsx), so there's no real customer_id to read.
@@ -55,7 +56,7 @@ const toCitations = (sources: WireSource[]): Citation[] =>
   );
 
 const agentTurn = (overrides: Partial<Turn>): Turn => ({
-  turnId: crypto.randomUUID(),
+  turnId: uuid(),
   role: "agent",
   text: "",
   steps: [],
@@ -99,7 +100,7 @@ export function useChatStream(sessionId: string) {
       abortRef.current = ctrl;
 
       appendTurn(queryClient, sessionId, {
-        turnId: crypto.randomUUID(),
+        turnId: uuid(),
         role: "technician",
         text: trimmed,
         steps: [],

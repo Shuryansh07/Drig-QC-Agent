@@ -11,6 +11,7 @@ import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mu
 import { UploadDropzone } from "./components/UploadDropzone";
 import { DocumentRow } from "./components/DocumentRow";
 import { MAX_UPLOAD_BYTES, kindOfFile, unsupportedFileMessage } from "./types";
+import { uuid } from "@/lib/uuid";
 
 /** A file the admin just chose, before it shows up in the server's document list. */
 interface UploadNotice {
@@ -41,7 +42,7 @@ export default function AdminKnowledgeScreen() {
   const dismissNotice = (id: string) => setNotices((prev) => prev.filter((n) => n.id !== id));
 
   const handleFiles = async (files: File[]) => {
-    const items: UploadNotice[] = files.map((file) => ({ id: crypto.randomUUID(), name: file.name, state: "uploading" }));
+    const items: UploadNotice[] = files.map((file) => ({ id: uuid(), name: file.name, state: "uploading" }));
     setNotices((prev) => [...items, ...prev]);
 
     // One at a time: the API already queues the heavy work, and sequential
