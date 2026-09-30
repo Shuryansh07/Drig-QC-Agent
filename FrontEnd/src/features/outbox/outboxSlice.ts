@@ -1,5 +1,6 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 import { loadOutbox, saveOutbox } from "@/lib/offline";
+import { uuid } from "@/lib/uuid";
 
 /**
  * A question typed with no signal. It has no server representation yet, so it
@@ -31,7 +32,7 @@ const outboxSlice = createSlice({
   reducers: {
     queued(state, action: PayloadAction<{ sessionId: string; text: string }>) {
       state.entries.push({
-        id: crypto.randomUUID(),
+        id: uuid(),
         sessionId: action.payload.sessionId,
         text: action.payload.text,
         queuedAt: new Date().toISOString(),

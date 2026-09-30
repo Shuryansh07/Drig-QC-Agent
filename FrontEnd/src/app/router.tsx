@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate, type RouteObject } from "react-router";
 import { SkeletonRouteFallback } from "@/components/common/SkeletonRouteFallback";
+import { uuid } from "@/lib/uuid";
 
 const ChatScreen = lazy(() => import("@/features/chat/ChatScreen"));
 const VehicleScreen = lazy(() => import("@/features/vehicle/VehicleScreen"));
@@ -19,7 +20,7 @@ function lazyRoute(element: React.ReactNode) {
 /** A fresh session id per cold start. Sessions are cheap; inheriting the
  *  previous job's vehicle is not (BACKEND_MEMORY.md §8). */
 function NewSession() {
-  return <Navigate to={`/s/${crypto.randomUUID()}`} replace />;
+  return <Navigate to={`/s/${uuid()}`} replace />;
 }
 
 const routes: RouteObject[] = [
