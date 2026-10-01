@@ -27,35 +27,18 @@ export const UPLOAD_PREFIX = process.env.S3_UPLOAD_PREFIX || "uploads/";
 
 const isNotFound = (err) => err?.name === "NotFound" || err?.name === "NoSuchKey" || err?.$metadata?.httpStatusCode === 404;
 
-const PUT_ATTEMPTS = 3;
-
-/**
- * Streams a local file to S3 under `key`. The SDK cannot retry a stream body (the
- * failed attempt already consumed it), so a dropped connection is retried here with
- * a fresh stream. A request S3 actually rejected (a 4xx) is not retried.
- */
+/** Streams a local file to S3 under `key`. */
 export const putFile = async (key, localPath, contentType) => {
   const { size } = await fs.promises.stat(localPath);
-
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await s3().send(
-        new PutObjectCommand({
-          Bucket: bucket(),
-          Key: key,
-          Body: fs.createReadStream(localPath),
-          ContentLength: size,
-          ...(contentType && { ContentType: contentType }),
-        })
-      );
-      return;
-    } catch (err) {
-      const status = err?.$metadata?.httpStatusCode;
-      const permanent = status !== undefined && status < 500 && status !== 429;
-      if (permanent || attempt >= PUT_ATTEMPTS) throw err;
-      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
-    }
-  }
+  await s3().send(
+    new PutObjectCommand({
+      Bucket: bucket(),
+      Key: key,
+      Body: fs.createReadStream(localPath),
+      ContentLength: size,
+      ...(contentType && { ContentType: contentType }),
+    })
+  );
 };
 
 /** Whole object as a Buffer. Throws an error with code ENOENT when the key does not exist. */

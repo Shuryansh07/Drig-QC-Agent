@@ -16,6 +16,12 @@ import { PageShell } from "@/components/common/PageShell";
 import { Button } from "@/components/ui/button";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
+const SUGGESTIONS = [
+  "Where should the tracking unit be mounted?",
+  "Which wire is the ignition wire?",
+  "The unit won't power on after install",
+];
+
 export default function ChatScreen() {
   const { sessionId = "" } = useParams();
   const dispatch = useAppDispatch();
@@ -101,7 +107,6 @@ export default function ChatScreen() {
           onAnswerClarify={(value) => void send(value)}
           onSkipClarify={() => void send("I don't know")}
           onRequestEngineer={openEngineer}
-          onCancel={cancel}
         />
       </div>
 

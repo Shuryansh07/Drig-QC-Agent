@@ -3,7 +3,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { extractDocumentBlocks } from "./chunking/pdfStructure.js";
 import { extractDocxBlocks } from "./chunking/docxStructure.js";
-import { kindOfFileName, describeKind, bufferMatchesKind, unsupportedTypeMessage } from "./chunking/documentTypes.js";
+import { kindOfFileName, describeKind, mimeOfKind, bufferMatchesKind, unsupportedTypeMessage } from "./chunking/documentTypes.js";
+import * as storage from "./storage.service.js";
 import { buildChunkTree } from "./chunking/chunker.js";
 import { enrichWithVisuals } from "./chunking/visualEnrichment.js";
 import * as figures from "../db/images.js";
@@ -30,6 +31,17 @@ const deleteTempFile = async (filePath, log) => {
     log?.(`temp file deleted: ${filePath}`);
   } catch (err) {
     if (err.code !== "ENOENT") logger.error(`Failed to delete temp file ${filePath}`, err);
+  }
+};
+
+// The durable copy in S3. `document.tempFilePath` holds its object key.
+const deleteStoredFile = async (key, log) => {
+  if (!key) return;
+  try {
+    await storage.remove(key);
+    log?.(`stored file deleted: ${key}`);
+  } catch (err) {
+    logger.error(`Failed to delete stored file ${key}`, err);
   }
 };
 
