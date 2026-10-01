@@ -9,8 +9,8 @@ import { readSSEFrames } from "@/lib/sse";
 import { queryKeys } from "@/lib/query-client";
 import { isOnline } from "@/lib/offline";
 import { logger } from "@/lib/logger";
-import type { AnswerStep, Citation, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
 import { uuid } from "@/lib/uuid";
+import type { AnswerStep, Citation, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
 
 // No auth/tenant selection UI exists yet (AuthProvider is a stub — see
 // features/auth/AuthProvider.tsx), so there's no real customer_id to read.

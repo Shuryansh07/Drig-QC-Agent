@@ -1,6 +1,8 @@
 /**
- * Matches the real backend contract (BackEnd/src/controllers/document.controller.js).
- * Field names are the backend's snake_case, unmapped, like features/ragSearch.
+
+* Matches the real backend contract (BackEnd/src/controllers/document.controller.js).
+
+* Field names are the backend's snake_case, unmapped, like features/ragSearch.
  */
 
 export type IngestStatus =
@@ -35,6 +37,11 @@ export interface AdminDocument {
 
 export interface DocumentListResponse {
   documents: AdminDocument[];
+  page: number;
+  page_size: number;
+  /** Total documents in the knowledge base, across every page — not just this response's `documents`. */
+  total: number;
+  total_pages: number;
 }
 
 /** 202 for a new upload, 200 with `duplicate` when identical bytes were already ingested. */
