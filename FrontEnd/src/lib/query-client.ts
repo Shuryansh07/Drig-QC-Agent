@@ -19,5 +19,8 @@ export const queryKeys = {
   handoffQueue: () => ["handoff", "queue"] as const,
   vehicleLookup: (q: string) => ["vehicle", "lookup", q] as const,
   recentVehicles: () => ["vehicle", "recent"] as const,
-  adminDocuments: () => ["admin", "documents"] as const,
+  // No `page` invalidates every page (and every search) at once (React Query's default
+  // prefix match) — mutations (upload/retry/delete) rely on that to refresh whatever's open.
+  adminDocuments: (page?: number, search?: string) =>
+    page === undefined ? (["admin", "documents"] as const) : (["admin", "documents", page, search ?? ""] as const),
 } as const;

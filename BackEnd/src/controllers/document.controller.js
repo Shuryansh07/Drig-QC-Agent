@@ -90,18 +90,38 @@ export const retryDocumentController = async (req, res) => {
   }
 };
 
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 10;
+
+/** Clamps a query param to a positive integer, falling back to `fallback` for anything not parseable. */
+const toPositiveInt = (value, fallback, max) => {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return max ? Math.min(n, max) : n;
+};
+
 /**
- * GET /api/documents — everything uploaded, newest first, with per-document
- * progress and how many sections/chunks it was split into. Backs the admin
- * panel, which polls this one endpoint instead of one status call per row.
+ * GET /api/documents?page=&page_size=&q= — one page of uploaded documents,
+ * newest first, with per-document progress and how many sections/chunks it
+ * was split into. `q` filters to titles containing it (case-insensitive).
+ * Backs the admin panel, which polls this one endpoint (for the page and
+ * search it has open) instead of one status call per row.
  */
 export const listDocumentsController = async (req, res) => {
   try {
-    const rows = await documents.listDocuments();
+    const page = toPositiveInt(req.query.page, 1);
+    const pageSize = toPositiveInt(req.query.page_size, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+    const search = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : undefined;
+
+    const { documents: rows, total } = await documents.listDocuments(page, pageSize, search);
 
     return res.status(200).json({
+      page,
+      page_size: pageSize,
+      total,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
       documents: rows.map((d) => {
-        const total = d.pageCount ?? 0;
+        const docPageCount = d.pageCount ?? 0;
         const processed = d.processedPages ?? 0;
         return {
           document_id: d.docId,
@@ -110,7 +130,7 @@ export const listDocumentsController = async (req, res) => {
           total_pages: d.pageCount,
           processed_pages: d.processedPages,
           failed_pages: d.failedPages,
-          progress_percent: total > 0 ? Math.round((processed / total) * 100) : 0,
+          progress_percent: docPageCount > 0 ? Math.round((processed / docPageCount) * 100) : 0,
           parent_chunks: d.parentChunks,
           child_chunks: d.childChunks,
           live_version: d.liveVersion,

@@ -1,11 +1,14 @@
 import { useState } from "react";
-import { LoaderCircle, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, LoaderCircle, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { PageShell } from "@/components/common/PageShell";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api-client";
+import { uuid } from "@/lib/uuid";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useAdminDocuments } from "./api/queries";
 import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mutations";
 import { UploadDropzone } from "./components/UploadDropzone";
@@ -27,11 +30,26 @@ const errorMessage = (err: unknown): string =>
  * Knowledge-base admin: upload manuals, watch them get parsed into sections
  * and chunks, retry failures. The upload returns immediately; a background
  * worker does the parsing, chunking, embedding and publishing, so progress
- * here comes from polling GET /api/documents.
+ * here comes from polling GET /api/documents — one page of it at a time, the
+ * server does the slicing.
  */
 export default function AdminKnowledgeScreen() {
   const [notices, setNotices] = useState<UploadNotice[]>([]);
-  const { data: documents, isPending, error, refetch } = useAdminDocuments();
+  const [page, setPage] = useState(1);
+  const [searchInput, setSearchInput] = useState("");
+  // The query only fires 300ms after typing stops, so each keystroke doesn't
+  // hit the server — searchInput still updates instantly, for a responsive box.
+  const debouncedSearch = useDebouncedValue(searchInput, 300);
+  const { data, isPending, error, refetch } = useAdminDocuments(page, debouncedSearch);
+  const documents = data?.documents;
+  const totalPages = data?.total_pages ?? 1;
+
+  // A new search always starts back at page 1 — set the moment the admin types,
+  // not once the debounced request lands, so Previous/Next never show a stale page.
+  const handleSearchChange = (value: string) => {
+    setSearchInput(value);
+    setPage(1);
+  };
   const upload = useUploadDocument();
   const retry = useRetryDocument();
   const remove = useDeleteDocument();
@@ -41,7 +59,7 @@ export default function AdminKnowledgeScreen() {
   const dismissNotice = (id: string) => setNotices((prev) => prev.filter((n) => n.id !== id));
 
   const handleFiles = async (files: File[]) => {
-    const items: UploadNotice[] = files.map((file) => ({ id: crypto.randomUUID(), name: file.name, state: "uploading" }));
+    const items: UploadNotice[] = files.map((file) => ({ id: uuid(), name: file.name, state: "uploading" }));
     setNotices((prev) => [...items, ...prev]);
 
     // One at a time: the API already queues the heavy work, and sequential
@@ -80,17 +98,22 @@ export default function AdminKnowledgeScreen() {
   };
 
   // Returns the promise so the confirm dialog stays open when the delete is refused.
-  const handleDelete = (documentId: string) =>
-    remove.mutateAsync(documentId).then(
+  // Known up front, from what's already on screen: deleting the only document left on
+  // a page past the first would leave this page empty, so step back once it succeeds.
+  const handleDelete = (documentId: string) => {
+    const emptiesPage = documents?.length === 1 && page > 1;
+    return remove.mutateAsync(documentId).then(
       (result) => {
         toast.success("Document deleted");
         for (const warning of result.warnings ?? []) toast.warning(warning);
+        if (emptiesPage) setPage(page - 1);
       },
       (err) => {
         toast.error(errorMessage(err));
         throw err;
       },
     );
+  };
 
   const retryingId = retry.isPending ? retry.variables : undefined;
   const deletingId = remove.isPending ? remove.variables : undefined;
@@ -145,12 +168,24 @@ export default function AdminKnowledgeScreen() {
         </section>
 
         <section aria-label="Documents" className="space-y-3">
-          <h2 className="text-lead font-semibold tracking-tight">
-            Documents
-            {documents && documents.length > 0 ? (
-              <span className="text-muted-foreground ml-2 font-normal">{documents.length}</span>
-            ) : null}
-          </h2>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="text-lead font-semibold tracking-tight">
+              Documents
+              {data && data.total > 0 ? <span className="text-muted-foreground ml-2 font-normal">{data.total}</span> : null}
+            </h2>
+
+            <div className="relative sm:w-72">
+              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" aria-hidden />
+              <Input
+                type="search"
+                value={searchInput}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Search by file name…"
+                aria-label="Search documents by file name"
+                className="pl-9"
+              />
+            </div>
+          </div>
 
           {isPending ? (
             <div className="space-y-3">
@@ -166,23 +201,60 @@ export default function AdminKnowledgeScreen() {
               </Button>
             </div>
           ) : !documents || documents.length === 0 ? (
-            <EmptyState
-              title="No manuals yet"
-              body="Upload the first PDF above. It will appear here while it is read, split and indexed."
-            />
+            debouncedSearch ? (
+              <EmptyState
+                title="No matches"
+                body={`No document title contains "${debouncedSearch}".`}
+                action={
+                  <Button variant="outline" size="sm" onClick={() => handleSearchChange("")}>
+                    Clear search
+                  </Button>
+                }
+              />
+            ) : (
+              <EmptyState
+                title="No manuals yet"
+                body="Upload the first PDF above. It will appear here while it is read, split and indexed."
+              />
+            )
           ) : (
-            <ul className="space-y-3">
-              {documents.map((doc) => (
-                <DocumentRow
-                  key={doc.document_id}
-                  document={doc}
-                  onRetry={handleRetry}
-                  retrying={retryingId === doc.document_id}
-                  onDelete={handleDelete}
-                  deleting={deletingId === doc.document_id}
-                />
-              ))}
-            </ul>
+            <>
+              <ul className="space-y-3">
+                {documents.map((doc) => (
+                  <DocumentRow
+                    key={doc.document_id}
+                    document={doc}
+                    onRetry={handleRetry}
+                    retrying={retryingId === doc.document_id}
+                    onDelete={handleDelete}
+                    deleting={deletingId === doc.document_id}
+                  />
+                ))}
+              </ul>
+
+              {totalPages > 1 ? (
+                <div className="flex items-center justify-between pt-1">
+                  <p className="text-micro text-muted-foreground">
+                    Page {page} of {totalPages}
+                  </p>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>
+                      <ChevronLeft />
+                      Previous
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={page === totalPages}
+                      onClick={() => setPage(page + 1)}
+                    >
+                      Next
+                      <ChevronRight />
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </>
           )}
         </section>
       </div>
