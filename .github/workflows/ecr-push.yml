@@ -1,0 +1,90 @@
+name: Build, Push to ECR & Deploy to ECS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "BackEnd/**"
+      - ".github/workflows/ecr-push.yml"
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: qc_ai_agent
+  ECS_CLUSTER: Drig-qc-agent
+
+  API_SERVICE: qc-agent-api-svc
+  API_TASK_FAMILY: qc-agent-api
+  API_CONTAINER: QC-Agent-api
+
+  WORKER_SERVICE: qc-agent-worker-svc
+  WORKER_TASK_FAMILY: qc-agent-worker
+  WORKER_CONTAINER: QC-Agent-worker
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$ECR_REPOSITORY:$TAG -t $REGISTRY/$ECR_REPOSITORY:latest ./BackEnd
+          docker push $REGISTRY/$ECR_REPOSITORY:$TAG
+          docker push $REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$REGISTRY/$ECR_REPOSITORY:$TAG" >> $GITHUB_OUTPUT
+
+      - name: Download current task definitions
+        run: |
+          aws ecs describe-task-definition --task-definition $API_TASK_FAMILY --query taskDefinition > api-task-def.json
+          aws ecs describe-task-definition --task-definition $WORKER_TASK_FAMILY --query taskDefinition > worker-task-def.json
+
+      # API: swap only the image, keep everything else (env vars, roles, CPU/memory)
+      - name: Render API task definition
+        id: render-api
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: api-task-def.json
+          container-name: ${{ env.API_CONTAINER }}
+          image: ${{ steps.build.outputs.image }}
+
+      - name: Deploy API service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-api.outputs.task-definition }}
+          service: ${{ env.API_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # Worker: same image, keeps its "npm run worker" command
+      - name: Render worker task definition
+        id: render-worker
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: worker-task-def.json
+          container-name: ${{ env.WORKER_CONTAINER }}
+          image: ${{ steps.build.outputs.image }}
+
+      - name: Deploy worker service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-worker.outputs.task-definition }}
+          service: ${{ env.WORKER_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
