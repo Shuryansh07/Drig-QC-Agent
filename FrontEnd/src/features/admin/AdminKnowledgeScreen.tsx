@@ -14,7 +14,7 @@ import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mu
 import { UploadDropzone } from "./components/UploadDropzone";
 import { DocumentRow } from "./components/DocumentRow";
 import { MAX_UPLOAD_BYTES, kindOfFile, unsupportedFileMessage } from "./types";
-import { uuid } from "@/lib/uuid";
+// import { uuid } from "@/lib/uuid";
 
 /** A file the admin just chose, before it shows up in the server's document list. */
 interface UploadNotice {
