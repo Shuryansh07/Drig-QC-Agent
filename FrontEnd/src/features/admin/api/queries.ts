@@ -1,18 +1,30 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
-import { isInFlight, type AdminDocument, type DocumentListResponse } from "../types";
+import { isInFlight, type DocumentListResponse } from "../types";
+
+export const DOCUMENTS_PAGE_SIZE = 10;
 
 /**
- * GET /api/documents. Polls every couple of seconds while any document is
- * still being processed, and stops when everything has settled (an upload or
- * retry invalidates it again, which restarts the polling).
+ * GET /api/documents?page=&page_size=&q=. Polls every couple of seconds
+ * while a document on the CURRENT page is still being processed, and stops
+ * once everything on it has settled (an upload or retry invalidates every
+ * page and search, which restarts polling on whatever's open). A document in
+ * flight on a different page or search is still covered: it lands on page 1
+ * (newest first) and that polling resumes as soon as the admin turns to it.
+ *
+ * `search` should already be debounced by the caller — this hook fires a
+ * request on every value it's given.
  */
-export function useAdminDocuments() {
+export function useAdminDocuments(page: number, search: string) {
   return useQuery({
-    queryKey: queryKeys.adminDocuments(),
-    queryFn: async (): Promise<AdminDocument[]> => (await apiFetch<DocumentListResponse>("/documents")).documents,
-    refetchInterval: (query) => (query.state.data?.some((d) => isInFlight(d.status)) ? 2000 : false),
+    queryKey: queryKeys.adminDocuments(page, search),
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(page), page_size: String(DOCUMENTS_PAGE_SIZE) });
+      if (search) params.set("q", search);
+      return apiFetch<DocumentListResponse>(`/documents?${params}`);
+    },
+    refetchInterval: (query) => (query.state.data?.documents.some((d) => isInFlight(d.status)) ? 2000 : false),
     // Always show fresh progress when returning to the panel.
     staleTime: 0,
     refetchOnWindowFocus: true,

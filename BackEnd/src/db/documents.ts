@@ -60,27 +60,69 @@ export interface DocumentSummary extends DocumentRecord {
   childChunks: number;
 }
 
-/** Newest first. Uploaded documents only; counts cover the current (unsuperseded-by-a-newer-version) chunks. */
-export const listDocuments = async (limit = 100): Promise<DocumentSummary[]> => {
+export interface DocumentPage {
+  documents: DocumentSummary[];
+  /** Total rows matching the filter, across every page — not just this one. */
+  total: number;
+}
+
+/** Escapes ILIKE's own wildcards so a title containing a literal `%` or `_` is matched literally, not as a pattern. */
+const escapeLike = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+/**
+ * Newest first, offset-paginated, optionally filtered to titles containing
+ * `search` (case-insensitive substring). Uploaded documents only; counts
+ * cover the current (unsuperseded-by-a-newer-version) chunks. Two queries
+ * rather than one with count(*) over(): a page past the end (e.g. the admin
+ * deleted the last document on the last page and hasn't refetched yet) would
+ * return zero rows and so zero total from a window function, which is wrong
+ * — the count query always reflects the real total regardless of which page
+ * is empty.
+ */
+export const listDocuments = async (page = 1, pageSize = 10, search?: string): Promise<DocumentPage> => {
   const { orgId } = await getDefaultOrg();
-  const { rows } = await pool.query(
-    `select d.doc_id, d.title, d.content_hash, d.external_ref, d.live_version, d.created_at,
-            s.ingest_status, s.temp_file_path, s.page_count, s.processed_pages, s.failed_pages,
-            s.error_message, s.workdrive_folder_id, s.updated_at,
-            (select count(*) from kb_chunk c where c.doc_id = d.doc_id and c.deleted_at is null and c.is_parent) as parent_chunks,
-            (select count(*) from kb_chunk c where c.doc_id = d.doc_id and c.deleted_at is null and not c.is_parent) as child_chunks
-       from kb_document d
-       join kb_document_ingest_state s on s.doc_id = d.doc_id
-      where d.org_id = $1 and d.origin = 'upload'
-      order by d.created_at desc
-      limit $2`,
-    [orgId, limit]
-  );
-  return rows.map((r) => ({
-    ...mapRow(r),
-    parentChunks: parseInt(r.parent_chunks, 10),
-    childChunks: parseInt(r.child_chunks, 10),
-  }));
+  const offset = (page - 1) * pageSize;
+  const trimmed = search?.trim();
+
+  // Built once and reused for both queries, so the row set a page is sliced
+  // from and the total it's sliced out of can never drift apart from each other.
+  const baseParams: unknown[] = [orgId];
+  let titleFilter = "";
+  if (trimmed) {
+    baseParams.push(`%${escapeLike(trimmed)}%`);
+    titleFilter = ` and d.title ilike $${baseParams.length} escape '\\'`;
+  }
+
+  const [{ rows }, {
+    rows: [{ count }],
+  }] = await Promise.all([
+    pool.query(
+      `select d.doc_id, d.title, d.content_hash, d.external_ref, d.live_version, d.created_at,
+              s.ingest_status, s.temp_file_path, s.page_count, s.processed_pages, s.failed_pages,
+              s.error_message, s.workdrive_folder_id, s.updated_at,
+              (select count(*) from kb_chunk c where c.doc_id = d.doc_id and c.deleted_at is null and c.is_parent) as parent_chunks,
+              (select count(*) from kb_chunk c where c.doc_id = d.doc_id and c.deleted_at is null and not c.is_parent) as child_chunks
+         from kb_document d
+         join kb_document_ingest_state s on s.doc_id = d.doc_id
+        where d.org_id = $1 and d.origin = 'upload'${titleFilter}
+        order by d.created_at desc
+        limit $${baseParams.length + 1} offset $${baseParams.length + 2}`,
+      [...baseParams, pageSize, offset]
+    ),
+    pool.query(
+      `select count(*) from kb_document d where d.org_id = $1 and d.origin = 'upload'${titleFilter}`,
+      baseParams
+    ),
+  ]);
+
+  return {
+    documents: rows.map((r) => ({
+      ...mapRow(r),
+      parentChunks: parseInt(r.parent_chunks, 10),
+      childChunks: parseInt(r.child_chunks, 10),
+    })),
+    total: parseInt(count, 10),
+  };
 };
 
 /**
