@@ -11,10 +11,10 @@ import { stripNul } from "../utils/sanitize.js";
 export type VisualType = "diagram" | "photo" | "table" | "chart" | "screenshot" | "mixed" | "decorative" | "none";
 
 export interface FigureRecord {
-  /** PDF page number; null for a Word image, which has no page. */
+  /** PDF page number; null for a Word image, which has no page. Always 1 for a standalone image upload. */
   page: number | null;
   contentHash: string;
-  sourceKind: "pdf_page" | "docx_image";
+  sourceKind: "pdf_page" | "docx_image" | "image_upload";
   visualType: VisualType;
   /** Empty for decorative / nothing-to-describe results, which are cached so they are not asked again. */
   description: string;
