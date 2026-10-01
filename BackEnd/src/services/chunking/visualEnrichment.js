@@ -4,6 +4,7 @@ import { describeVisual, figureModelTag } from "../vision.service.js";
 import { loadVisualParams } from "./visualParams.js";
 import { loadFigureCache, insertFigures } from "../../db/images.js";
 import { logger } from "../../utils/logger.js";
+import { mimeOfKind } from "./documentTypes.js";
 
 /**
  * Diagrams, photos, charts and tables are pictures as far as text extraction is
@@ -230,6 +231,53 @@ const enrichDocx = async ({ extraction, fileName, cache, params, log, save }) =>
   return { blocks, figures, failedPages };
 };
 
+// ---- standalone image upload ---------------------------------------------------
+
+/**
+ * A jpg/png uploaded on its own, not inside a PDF or Word file — there is no
+ * page to screenshot and no surrounding text for context; the whole buffer IS
+ * the one image, sent to the vision model as-is. Mirrors enrichDocx's single-
+ * image case, with no pageMap or placeholder scanning needed.
+ */
+const enrichImage = async ({ buffer, fileName, kind, cache, params, log, save }) => {
+  const contentHash = sha256(buffer);
+  let result = cache.get(contentHash);
+  let fresh = false;
+
+  if (!result) {
+    try {
+      result = await describeVisual({
+        imageBuffer: buffer,
+        mimeType: mimeOfKind(kind),
+        fileName,
+        locator: "the uploaded image",
+        reasons: ["standalone image upload"],
+        contextText: "",
+      });
+    } catch (err) {
+      logger.error(`[vision] "${fileName}" could not be described`, err);
+      return { blocks: [], figures: [], failedPages: [1] };
+    }
+    fresh = true;
+  }
+
+  const record = { page: 1, contentHash, sourceKind: "image_upload", visualType: result.visualType, description: result.description, modelTag: figureModelTag() };
+  if (fresh) await saveNow(save, record);
+
+  // Decorative or nothing recognizable: still cache the result (a retry shouldn't ask
+  // again), but there is then no content at all — the document fails "no extractable
+  // text" below, same as a scanned PDF page with nothing on it.
+  if (!result.description) {
+    log(`vision: "${fileName}" has nothing describable (${result.visualType})`);
+    return { blocks: [], figures: [record], failedPages: [] };
+  }
+
+  const blocks = [
+    { type: "figure", text: result.description, visualType: result.visualType, sourceKind: "image_upload", imageHash: contentHash, page: 1, pageEnd: 1 },
+  ];
+  return { blocks, figures: [record], failedPages: [] };
+};
+
 // ---- entry point -------------------------------------------------------------
 
 /**
@@ -247,8 +295,8 @@ export const enrichWithVisuals = async ({ kind, buffer, extraction, fileName, do
   }
 
   const cache = await loadFigureCache(docId, figureModelTag());
-  const args = { buffer, extraction, fileName, cache, params, log, save: { docId, version } };
-  const outcome = kind === "pdf" ? await enrichPdf(args) : await enrichDocx(args);
+  const args = { buffer, extraction, fileName, kind, cache, params, log, save: { docId, version } };
+  const outcome = kind === "pdf" ? await enrichPdf(args) : kind === "docx" ? await enrichDocx(args) : await enrichImage(args);
 
   const described = outcome.blocks.filter((b) => b.type === "figure").length;
   log(

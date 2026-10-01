@@ -43,9 +43,9 @@ export function UploadDropzone({ onFiles, disabled = false }: UploadDropzoneProp
       <CloudUpload className="text-muted-foreground size-9" aria-hidden />
 
       <div className="space-y-1">
-        <p className="text-body font-medium">Drop PDF or Word files here</p>
+        <p className="text-body font-medium">Drop PDF, Word or image files here</p>
         <p className="text-micro text-muted-foreground">
-          PDF or Word (.docx), up to 500 MB each. Scanned pages without a text layer can&apos;t be read.
+          PDF, Word (.docx), JPG or PNG, up to 500 MB each. Scanned pages without a text layer can&apos;t be read.
         </p>
       </div>
 

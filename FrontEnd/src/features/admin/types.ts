@@ -74,22 +74,33 @@ export const ACCEPTED_FILE_TYPES = [
   ".pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".docx",
+  "image/jpeg",
+  ".jpg",
+  ".jpeg",
+  "image/png",
+  ".png",
 ] as const;
 
-export type UploadableKind = "pdf" | "docx";
+export type UploadableKind = "pdf" | "docx" | "jpg" | "jpeg" | "png";
+
+/** A standalone image upload (no surrounding manual) — described by the vision model, archived, embedded. */
+export const isImageKind = (kind: UploadableKind | null): boolean => kind === "jpg" || kind === "jpeg" || kind === "png";
 
 /** By extension, like the backend: browsers report Word files under several MIME types. */
 export const kindOfFile = (name: string): UploadableKind | null => {
   const lower = name.toLowerCase();
   if (lower.endsWith(".pdf")) return "pdf";
   if (lower.endsWith(".docx")) return "docx";
+  if (lower.endsWith(".jpg")) return "jpg";
+  if (lower.endsWith(".jpeg")) return "jpeg";
+  if (lower.endsWith(".png")) return "png";
   return null;
 };
 
 export const unsupportedFileMessage = (name: string): string =>
   name.toLowerCase().endsWith(".doc")
     ? "Old .doc files aren't supported. Save it as .docx in Word and upload that."
-    : "Only PDF and Word (.docx) files can be uploaded.";
+    : "Only PDF, Word (.docx), JPG or PNG files can be uploaded.";
 
 export interface DeleteResponse {
   document_id: string;
