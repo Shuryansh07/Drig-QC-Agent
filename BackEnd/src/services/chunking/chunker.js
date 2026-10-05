@@ -369,7 +369,7 @@ export const buildChunkTree = async (blocks, title, params) => {
           ...(piece.hasWarning && { hasWarning: true }),
           ...(piece.stepCount && { stepCount: piece.stepCount }),
           ...(piece.part && { part: piece.part }),
-          ...(piece.kind === "figure" && { machineGenerated: true, visualType: piece.visualType }),
+          ...(piece.kind === "figure" && { machineGenerated: true, visualType: piece.visualType, imageHash: piece.blocks[0].imageHash }),
         },
       });
     }

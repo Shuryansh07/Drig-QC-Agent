@@ -25,6 +25,15 @@ const bucket = () => {
 
 export const UPLOAD_PREFIX = process.env.S3_UPLOAD_PREFIX || "uploads/";
 
+// Rendered pages and embedded images that were described by the vision model. Kept
+// for as long as the document exists, so the answer model can look at the drawing
+// itself instead of only at a description of it. Keyed by content hash: the same
+// picture in a later version is the same object.
+export const FIGURE_PREFIX = process.env.S3_FIGURE_PREFIX || "figures/";
+export const figurePrefixOf = (docId) => `${FIGURE_PREFIX}${docId}/`;
+export const figureKey = (docId, contentHash, mimeType) =>
+  `${figurePrefixOf(docId)}${contentHash}.${mimeType === "image/jpeg" ? "jpg" : (mimeType?.split("/")[1] ?? "bin")}`;
+
 const isNotFound = (err) => err?.name === "NotFound" || err?.name === "NoSuchKey" || err?.$metadata?.httpStatusCode === 404;
 
 const PUT_ATTEMPTS = 3;
@@ -56,6 +65,13 @@ export const putFile = async (key, localPath, contentType) => {
       await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
     }
   }
+};
+
+/** An in-memory buffer to S3 under `key`. A buffer body can be resent, so the SDK's own retries cover it. */
+export const putBuffer = async (key, buffer, contentType) => {
+  await s3().send(
+    new PutObjectCommand({ Bucket: bucket(), Key: key, Body: buffer, ...(contentType && { ContentType: contentType }) })
+  );
 };
 
 /** Whole object as a Buffer. Throws an error with code ENOENT when the key does not exist. */

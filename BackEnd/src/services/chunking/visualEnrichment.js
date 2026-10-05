@@ -5,6 +5,7 @@ import { loadVisualParams } from "./visualParams.js";
 import { loadFigureCache, insertFigures } from "../../db/images.js";
 import { logger } from "../../utils/logger.js";
 import { mimeOfKind } from "./documentTypes.js";
+import * as storage from "../storage.service.js";
 
 /**
  * Diagrams, photos, charts and tables are pictures as far as text extraction is
@@ -38,6 +39,23 @@ const saveNow = async ({ docId, version }, record) => {
     await insertFigures(docId, version, [record]);
   } catch (err) {
     logger.error("[vision] could not save a description as it arrived (it will be saved with the rest)", err);
+  }
+};
+
+/**
+ * Keep the picture itself, so the answer model can look at the drawing when a
+ * question lands on it (answerGeneration.service.js). Only pictures that got a
+ * description are kept; decorative ones are never shown. Best-effort: a picture
+ * that could not be stored is still searchable through its description.
+ */
+const storeImage = async ({ docId }, { contentHash, buffer, mimeType }) => {
+  const key = storage.figureKey(docId, contentHash, mimeType);
+  try {
+    await storage.putBuffer(key, buffer, mimeType);
+    return key;
+  } catch (err) {
+    logger.error(`[vision] could not store figure image ${key} (answers will use its description only)`, err);
+    return null;
   }
 };
 
@@ -145,7 +163,8 @@ const enrichPdf = async ({ buffer, extraction, fileName, cache, params, log, sav
         fresh = true;
       }
 
-      const record = { page, contentHash, sourceKind: "pdf_page", visualType: result.visualType, description: result.description, modelTag };
+      const s3Key = result.description ? await storeImage(save, { contentHash, buffer: png, mimeType: "image/png" }) : null;
+      const record = { page, contentHash, sourceKind: "pdf_page", visualType: result.visualType, description: result.description, modelTag, s3Key };
       figures.push(record);
       if (fresh) await saveNow(save, record);
       if (result.description) results.set(page, { ...result, contentHash });
@@ -211,7 +230,8 @@ const enrichDocx = async ({ extraction, fileName, cache, params, log, save }) =>
         fresh = true;
       }
 
-      const record = { page: null, contentHash, sourceKind: "docx_image", visualType: result.visualType, description: result.description, modelTag };
+      const s3Key = result.description ? await storeImage(save, { contentHash, buffer: image.buffer, mimeType: image.contentType }) : null;
+      const record = { page: null, contentHash, sourceKind: "docx_image", visualType: result.visualType, description: result.description, modelTag, s3Key };
       figures.push(record);
       if (fresh) await saveNow(save, record);
       described.set(block, { ...result, contentHash });
@@ -261,7 +281,8 @@ const enrichImage = async ({ buffer, fileName, kind, cache, params, log, save })
     fresh = true;
   }
 
-  const record = { page: 1, contentHash, sourceKind: "image_upload", visualType: result.visualType, description: result.description, modelTag: figureModelTag() };
+  const s3Key = result.description ? await storeImage(save, { contentHash, buffer, mimeType: mimeOfKind(kind) }) : null;
+  const record = { page: 1, contentHash, sourceKind: "image_upload", visualType: result.visualType, description: result.description, modelTag: figureModelTag(), s3Key };
   if (fresh) await saveNow(save, record);
 
   // Decorative or nothing recognizable: still cache the result (a retry shouldn't ask
