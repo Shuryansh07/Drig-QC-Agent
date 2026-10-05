@@ -3,7 +3,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { extractDocumentBlocks } from "./chunking/pdfStructure.js";
 import { extractDocxBlocks } from "./chunking/docxStructure.js";
-import { kindOfFileName, describeKind, mimeOfKind, bufferMatchesKind, unsupportedTypeMessage } from "./chunking/documentTypes.js";
+import { extractImageBlocks } from "./chunking/imageStructure.js";
+import { kindOfFileName, describeKind, mimeOfKind, bufferMatchesKind, unsupportedTypeMessage, isImageKind } from "./chunking/documentTypes.js";
 import * as storage from "./storage.service.js";
 import { buildChunkTree } from "./chunking/chunker.js";
 import { enrichWithVisuals } from "./chunking/visualEnrichment.js";
@@ -75,6 +76,7 @@ const pageOf = (child) => child.pageFrom ?? 1;
 const extractBlocks = (kind, buffer) => {
   if (kind === "pdf") return extractDocumentBlocks(buffer);
   if (kind === "docx") return extractDocxBlocks(buffer);
+  if (isImageKind(kind)) return extractImageBlocks(buffer);
   throw Object.assign(new Error(unsupportedTypeMessage(null)), { status: 400 });
 };
 
@@ -308,9 +310,11 @@ export const processDocument = async (document) => {
     tempFilePath: canDeleteTempFile ? null : document.tempFilePath,
     errorMessage:
       chunksCreated === 0
-        ? kindOfFileName(fileName) === "pdf"
-          ? "No extractable text — the PDF looks scanned (no text layer). Upload a text-searchable version; OCR is not enabled."
-          : "No text was found in this document. Make sure it contains text (not only images) and upload it again."
+        ? isImageKind(kindOfFileName(fileName))
+          ? "Nothing recognizable was found in this image, or image description is turned off. Upload a clearer image."
+          : kindOfFileName(fileName) === "pdf"
+            ? "No extractable text — the PDF looks scanned (no text layer). Upload a text-searchable version; OCR is not enabled."
+            : "No text was found in this document. Make sure it contains text (not only images) and upload it again."
         : failedPages.length > 0
           ? searchable
             ? `Page(s) ${failedPages.map((p) => p.pageNumber).join(", ")}: diagrams or tables could not be described. The text is searchable; retry to describe them.`
@@ -470,6 +474,14 @@ export const deleteDocument = async (docId) => {
       logger.error(`[delete ${docId}] could not remove S3 copy ${removed.tempFilePath}`, err);
       warnings.push("The temporary upload copy could not be removed from S3.");
     }
+  }
+
+  try {
+    const stored = await storage.list(storage.figurePrefixOf(docId));
+    await Promise.all(stored.map(({ key }) => storage.remove(key)));
+  } catch (err) {
+    logger.error(`[delete ${docId}] could not remove figure images under ${storage.figurePrefixOf(docId)}`, err);
+    warnings.push("Some stored diagram images could not be removed from S3.");
   }
 
   if (removed.externalRef && !removed.externalRef.startsWith("upload:")) {

@@ -6,6 +6,13 @@
  * Old binary Word files (.doc) are deliberately NOT supported: they are a
  * different format that no lightweight parser reads reliably. The upload
  * error tells the admin to save as .docx instead.
+ *
+ * jpg/jpeg/png are a standalone photo or scan with no accompanying manual —
+ * e.g. a photo of a wiring diagram, a label, a nameplate. They have no text of
+ * their own; imageStructure.js tracks them as a single page with no blocks,
+ * and visualEnrichment.js's enrichImage() sends the whole image straight to
+ * the vision model so its description becomes the document's only (searchable)
+ * content. See isImageKind() below.
  */
 const KINDS = {
   pdf: {
@@ -22,9 +29,33 @@ const KINDS = {
     // A .docx is a zip container: "PK\x03\x04"
     magic: [0x50, 0x4b, 0x03, 0x04],
   },
+  jpg: {
+    label: "JPEG image",
+    extension: ".jpg",
+    mime: "image/jpeg",
+    // JPEG SOI marker
+    magic: [0xff, 0xd8, 0xff],
+  },
+  jpeg: {
+    label: "JPEG image",
+    extension: ".jpeg",
+    mime: "image/jpeg",
+    magic: [0xff, 0xd8, 0xff],
+  },
+  png: {
+    label: "PNG image",
+    extension: ".png",
+    mime: "image/png",
+    // PNG signature (first 4 of 8 bytes — enough to tell it apart from everything else here)
+    magic: [0x89, 0x50, 0x4e, 0x47],
+  },
 };
 
 export const SUPPORTED_EXTENSIONS = Object.values(KINDS).map((k) => k.extension);
+
+const IMAGE_KINDS = new Set(["jpg", "jpeg", "png"]);
+/** A standalone image upload (as opposed to a PDF or Word FILE that may itself contain images). */
+export const isImageKind = (kind) => IMAGE_KINDS.has(kind);
 
 /** 'pdf' | 'docx' | null, from the file name. */
 export const kindOfFileName = (fileName) => {
@@ -45,4 +76,4 @@ export const bufferMatchesKind = (buffer, kind) => {
 export const unsupportedTypeMessage = (fileName) =>
   String(fileName ?? "").toLowerCase().endsWith(".doc")
     ? "Old .doc files are not supported. Open it in Word and save it as .docx, then upload that."
-    : "Only PDF and Word (.docx) files can be uploaded.";
+    : "Only PDF, Word (.docx), JPEG (.jpg/.jpeg) or PNG files can be uploaded.";

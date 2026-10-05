@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useParams } from "react-router";
 import { useAppDispatch, useAppSelector } from "@/app/hooks";
 import { chatActions } from "@/features/chat/chatSlice";
@@ -29,6 +29,10 @@ export default function ChatScreen() {
 
   const draft = useAppSelector((s) => s.chat.draft);
   const streaming = useAppSelector((s) => s.chat.status);
+  // Only to re-run the auto-scroll effect as the answer grows — not rendered here,
+  // StreamingTurnView reads the full chat slice itself for the actual content.
+  const partialText = useAppSelector((s) => s.chat.partialText);
+  const stepCount = useAppSelector((s) => s.chat.steps.length);
 
   const { data: conversation } = useConversation(sessionId);
   const { send, cancel } = useChatStream(sessionId);
@@ -46,6 +50,17 @@ export default function ChatScreen() {
 
   const turns = conversation?.turns ?? [];
   const busy = streaming === "thinking" || streaming === "streaming";
+
+  // Follows the answer down as it streams: this re-runs on the question being sent
+  // (status -> "thinking") and again on every batch of tokens/steps that arrives
+  // after that, so the newest text stays in view instead of growing off-screen below
+  // the fold. Settles on its own once streaming ends — nothing left to re-trigger it.
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (streaming === "thinking" || streaming === "streaming") {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [streaming, partialText, stepCount]);
 
   return (
     <PageShell
@@ -108,6 +123,9 @@ export default function ChatScreen() {
           onSkipClarify={() => void send("I don't know")}
           onRequestEngineer={openEngineer}
         />
+
+        {/* Zero-height: scrollIntoView'd rather than rendered, just marks "the bottom" to follow. */}
+        <div ref={bottomRef} />
       </div>
 
       <SourceDrawer />

@@ -14,6 +14,7 @@ import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mu
 import { UploadDropzone } from "./components/UploadDropzone";
 import { DocumentRow } from "./components/DocumentRow";
 import { MAX_UPLOAD_BYTES, kindOfFile, unsupportedFileMessage } from "./types";
+// import { uuid } from "@/lib/uuid";
 
 /** A file the admin just chose, before it shows up in the server's document list. */
 interface UploadNotice {
@@ -125,8 +126,9 @@ export default function AdminKnowledgeScreen() {
         <div className="px-5 py-4">
           <h1 className="text-title font-semibold tracking-tight">Knowledge base</h1>
           <p className="text-micro text-muted-foreground mt-1">
-            Upload manuals and guides (PDF or Word). Each file is split by section and paragraph so the assistant can
-            find the right procedure and show it with its warnings.
+            Upload manuals and guides (PDF, Word or image). A PDF or Word file is split by section and paragraph; a
+            standalone image (JPG/PNG) is described by an AI model instead, so a labeled diagram or nameplate photo
+            becomes searchable too.
           </p>
         </div>
       }

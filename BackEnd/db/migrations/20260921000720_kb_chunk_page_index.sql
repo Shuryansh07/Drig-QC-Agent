@@ -11,6 +11,14 @@
 
 alter table kb_chunk add column if not exists chunk_index int;
 
-create unique index if not exists kb_chunk_page_chunk_idx
-  on kb_chunk (doc_id, page_from, chunk_index)
-  where chunk_index is not null;
+-- 0730 drops this index for a per-version one. Once that exists, recreating
+-- this one on a rerun would fail: several versions of a document share
+-- (doc_id, page_from, chunk_index).
+do $$
+begin
+  if to_regclass('public.kb_chunk_version_page_chunk_idx') is null then
+    create unique index if not exists kb_chunk_page_chunk_idx
+      on kb_chunk (doc_id, page_from, chunk_index)
+      where chunk_index is not null;
+  end if;
+end $$;

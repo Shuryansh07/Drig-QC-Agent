@@ -9,7 +9,7 @@ import { logger } from "../../utils/logger.js";
 export const DEFAULT_VISUAL_PARAMS = {
   enabled: true,
   maxVisualsPerDocument: 40,
-  pageRenderScale: 2,
+  pageRenderScale: 3,
   minImagePx: 100,
   minVectorOps: 150,
 };
