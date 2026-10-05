@@ -476,6 +476,14 @@ export const deleteDocument = async (docId) => {
     }
   }
 
+  try {
+    const stored = await storage.list(storage.figurePrefixOf(docId));
+    await Promise.all(stored.map(({ key }) => storage.remove(key)));
+  } catch (err) {
+    logger.error(`[delete ${docId}] could not remove figure images under ${storage.figurePrefixOf(docId)}`, err);
+    warnings.push("Some stored diagram images could not be removed from S3.");
+  }
+
   if (removed.externalRef && !removed.externalRef.startsWith("upload:")) {
     try {
       await deleteOriginalFile(removed.externalRef);

@@ -2,8 +2,16 @@ import { getOpenAIClient } from "../config/openaiClient.js";
 import { withTiming } from "../utils/timing.js";
 import { visionLimiter } from "../utils/concurrencyLimiter.js";
 import { retryWithBackoff } from "../utils/retry.js";
+import { toVisionImages, visionContentParts } from "./chunking/imageTiles.js";
 
 const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+// Diagrams are where a small model fails worst (it invents pin lists and misses
+// wires), and each figure is described once per document, so the stronger model
+// is worth its price here even where the cheap one does everything else.
+const FIGURE_MODEL = process.env.OPENAI_FIGURE_MODEL || "gpt-4.1";
+// Tiles per side for figure images (3 = whole image plus nine zoomed tiles; 1 = whole image only). Paid once per
+// figure at ingestion: 3 was the first setting that read 4pt connector labels on a landscape schematic correctly.
+const FIGURE_TILE_GRID = parseInt(process.env.VISION_FIGURE_TILE_GRID || "3", 10);
 const VISION_TIMEOUT_MS = parseInt(process.env.VISION_TIMEOUT_MS || "90000", 10);
 // A sustained per-minute rate-limit collision can outlast the OpenAI SDK's
 // own (short) internal retry window — see the 43/75-page failure this was
@@ -99,26 +107,35 @@ export const analyzePage = async ({ fileName, pageNumber, pageText, imageBuffer 
 // page or image, because the prose is already extracted as text.
 // ---------------------------------------------------------------------------
 
-export const FIGURE_PROMPT_VERSION = "figure-v1";
+export const FIGURE_PROMPT_VERSION = "figure-v2";
 /** Stored with every description so a change of model or prompt is a cache miss, not a stale hit. */
-export const figureModelTag = () => `${VISION_MODEL}@${FIGURE_PROMPT_VERSION}`;
+export const figureModelTag = () => `${FIGURE_MODEL}@${FIGURE_PROMPT_VERSION}`;
 
 const VISUAL_TYPES = new Set(["diagram", "photo", "table", "chart", "screenshot", "mixed", "decorative", "none"]);
 
 const FIGURE_SYSTEM_PROMPT = `You describe the visual, non-prose content of technical documents so it can be found by text search. The body text of the page is already extracted separately, so do not repeat ordinary paragraphs.
 
+You are given the whole image first, then (for large images) overlapping zoomed sections of the same image. Use the whole image for layout and which line goes where; use the zoomed sections to read small print exactly. They are the SAME drawing: do not count anything twice because it appears in the whole image and in one or more zoomed sections.
+
 What to cover:
-- Diagrams and drawings: what the diagram shows, every printed label, the components and how they are laid out. For wiring or connection diagrams, list each label exactly as printed (wire colours, pin numbers, terminals, fuses, part names, values).
+- Wiring, electrical and connection diagrams. Write these sections, each starting on its own line:
+  TITLE BLOCK: drawing title, drawing/part number, revision, date, sheet, customer, vehicle/chassis and body as printed.
+  COMPONENTS: every lamp, connector, switch, relay, module, ground and terminal, by its printed name, with a count of how many of each are drawn (e.g. "RIGHT TURN: 2").
+  WIRES: one line per wire or wire label, as "colour [gauge] — from X — to Y". Copy the colour and gauge exactly as printed (e.g. "PUR 16 GA"). If one wire feeds several components, list all of them.
+  CONNECTORS: for each connector, each cavity/pin and the wire colour on it, in the order drawn. Say which pins are unused, capped or marked with an "X" and the colour of that wire. Do not invent pin numbers that are not printed; say "position 3 from left, top row" instead.
+  GROUNDS: which wires go to each ground point, with colour and gauge.
+  NOTES: any printed notes, warnings or callouts, verbatim.
+- Other diagrams and drawings: what the diagram shows, every printed label, the components and how they are laid out.
 - Photos and screenshots: what they show and any visible text.
 - Charts: what is plotted, axis labels, and the values that are printed.
 - Tables: transcribe EVERY row and column faithfully, one row per line, as "Column name: value; Column name: value". Do not skip rows or merge cells.
 
 Strict rules:
 - Use only what is visible. Do not use outside knowledge and do not guess.
-- Copy numbers, part numbers, model numbers, wire colours, pin numbers, units and warnings exactly as printed.
-- A line drawn between two labels does NOT prove a connection. Only state that A connects to B if the drawing makes it unambiguous (a label printed on the line, or the two are directly joined with nothing else nearby). Otherwise write "the drawing shows a line near X and Y; the exact connection cannot be confirmed from the image". Never assert a wiring relationship you are not certain of.
+- Copy numbers, part numbers, model numbers, wire colours, gauges, pin numbers, units (' is feet, " is inches) and warnings exactly as printed.
+- Follow each line from end to end before saying where it goes. If a line's path is ambiguous (crossings, lines that run off the image), write "connection unclear" for that wire instead of guessing.
 - If part of the image is unreadable, say which part is unreadable instead of guessing.
-- Write plain text, no markdown. Be complete for tables and labels, concise everywhere else.
+- Write plain text, no markdown. Be complete for tables, labels and wires, concise everywhere else.
 
 Output format, exactly:
 Line 1: TYPE: followed by one of diagram, photo, table, chart, screenshot, mixed, decorative, none
@@ -151,19 +168,19 @@ export const describeVisual = async ({ imageBuffer, mimeType, fileName, locator,
       text:
         `Document: ${fileName}\nWhere: ${locator}\n` +
         (reasons?.length ? `This was sent because it appears to contain: ${reasons.join(", ")}.\n` : "") +
-        `\nText already extracted from this page (context only — do not repeat it):\n"""\n${(contextText || "(none)").slice(0, 1500)}\n"""`,
+        `\nText already extracted from this page (context only — do not repeat it):\n"""\n${(contextText || "(none)").slice(0, 4000)}\n"""`,
     },
-    { type: "image_url", image_url: { url: `data:${mimeType};base64,${imageBuffer.toString("base64")}` } },
+    ...visionContentParts(await toVisionImages(imageBuffer, mimeType, { grid: FIGURE_TILE_GRID })),
   ];
 
   const response = await retryWithBackoff(
     `Vision describeVisual (${locator})`,
     () =>
       visionLimiter(() =>
-        withTiming(`OpenAI vision describeVisual (${VISION_MODEL}, ${locator})`, () =>
+        withTiming(`OpenAI vision describeVisual (${FIGURE_MODEL}, ${locator})`, () =>
           client.chat.completions.create(
             {
-              model: VISION_MODEL,
+              model: FIGURE_MODEL,
               messages: [
                 { role: "system", content: FIGURE_SYSTEM_PROMPT },
                 { role: "user", content: userContent },

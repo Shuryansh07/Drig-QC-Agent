@@ -1,4 +1,4 @@
-import { getDocument, OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { getDocument, OPS, Util } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { matchCallout } from "./textRules.js";
 
 /**
@@ -47,16 +47,26 @@ const sameSize = (a, b) => Math.abs(a - b) < 0.05;
 
 // ---- per-page text items -> reading-order regions -> lines ------------------
 
-const toItems = (textContent) =>
+/**
+ * Text items in DISPLAY orientation, with y growing upward. A landscape drawing is
+ * often stored as a portrait page with /Rotate 90: in the PDF's own coordinates its
+ * readable text is "vertical", and filtering on those coordinates threw away the
+ * whole title block and every wire label. Applying the viewport transform first
+ * keeps the text that reads left-to-right on screen and drops only text that is
+ * rotated as displayed. For an unrotated page this gives the same x/y as before.
+ */
+const toItems = (textContent, viewport) =>
   textContent.items
-    .filter((it) => typeof it.str === "string" && it.str.trim() !== "" && Math.abs(it.transform[1]) < 0.01)
-    .map((it) => ({
+    .filter((it) => typeof it.str === "string" && it.str.trim() !== "")
+    .map((it) => ({ it, m: Util.transform(viewport.transform, it.transform) }))
+    .filter(({ m }) => Math.abs(m[1]) < 0.01 && m[0] > 0)
+    .map(({ it, m }) => ({
       // A symbol font's bullet comes out of pdfjs as U+0000. Postgres cannot store it, and it IS a bullet.
       str: it.str.replace(/\u0000/g, "•"),
-      x: it.transform[4],
-      y: it.transform[5],
+      x: m[4],
+      y: viewport.height - m[5],
       width: it.width || 0,
-      size: it.height || Math.abs(it.transform[3]) || 1,
+      size: it.height || Math.abs(m[3]) || 1,
       fontName: it.fontName,
     }));
 
@@ -508,7 +518,7 @@ export const extractDocumentBlocks = async (buffer) => {
       const page = await pdf.getPage(n);
       const viewport = page.getViewport({ scale: 1 });
       const textContent = await page.getTextContent();
-      const items = toItems(textContent);
+      const items = toItems(textContent, viewport);
       const { hasImage, boldFonts, imageMinDims, pathOps } = await inspectPage(page, textContent);
 
       const regions = items.length ? readingRegions(items, viewport.width) : [];
