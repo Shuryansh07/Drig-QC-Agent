@@ -1,7 +1,57 @@
-import { AlertTriangle } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import type { AnswerStep, Citation } from "@/types/contracts";
 import { CitationChip } from "@/features/chat/components/CitationChip";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+/** Past this many, a step's citations collapse behind "Show all" — a wiring step
+ *  citing every page it touched can otherwise push the actual steps off-screen. */
+const CITATION_PREVIEW_COUNT = 5;
+
+interface StepCitationsProps {
+  citations: Citation[];
+  unavailable?: (chunkId: string) => boolean;
+  onOpen: (chunkId: string) => void;
+}
+
+/** Local to one step: expanding one step's overflowing citations never affects another's. */
+function StepCitations({ citations, unavailable, onOpen }: StepCitationsProps) {
+  const [expanded, setExpanded] = useState(false);
+  const overflows = citations.length > CITATION_PREVIEW_COUNT;
+  const visible = expanded || !overflows ? citations : citations.slice(0, CITATION_PREVIEW_COUNT);
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {visible.map((c) => (
+        <CitationChip key={c.chunkId} citation={c} unavailable={unavailable ? unavailable(c.chunkId) : false} onOpen={onOpen} />
+      ))}
+
+      {overflows ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((e) => !e)}
+          className="min-h-10 rounded-full"
+        >
+          {expanded ? (
+            <>
+              Show less
+              <ChevronUp aria-hidden />
+            </>
+          ) : (
+            <>
+              Show all ({citations.length})
+              <ChevronDown aria-hidden />
+            </>
+          )}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
 
 interface AnswerStepsProps {
   steps: AnswerStep[];
@@ -66,16 +116,7 @@ export function AnswerSteps({
               </p>
 
               {cites.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {cites.map((c) => (
-                    <CitationChip
-                      key={c.chunkId}
-                      citation={c}
-                      unavailable={citationAvailable ? !citationAvailable(c.chunkId) : false}
-                      onOpen={onOpenCitation}
-                    />
-                  ))}
-                </div>
+                <StepCitations citations={cites} unavailable={citationAvailable ? (id) => !citationAvailable(id) : undefined} onOpen={onOpenCitation} />
               ) : null}
             </div>
           </li>

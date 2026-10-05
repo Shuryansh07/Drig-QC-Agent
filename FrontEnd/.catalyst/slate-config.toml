@@ -3,7 +3,7 @@
 
 framework = "react-vite"
 install_command = "npm install"
-build_path = "dist"
+build_path = "./dist"
 build_command = "npm run build"
-deployment_name = "default"
+deployment_name = "QC-AI-Agent"
 root_path = "./"
