@@ -3,7 +3,7 @@ import * as documents from "../db/documents.js";
 import * as documentPages from "../db/documentPages.js";
 import { findLatestJobForDoc } from "../db/jobs.js";
 import { logger } from "../utils/logger.js";
-import { getDriveSyncStatus, scanDriveFolder, syncDriveFolder } from "../services/driveSync.service.js";
+import { getDriveSyncStatus, pauseDriveSync, resumeDriveSync, scanDriveFolder, syncDriveFolder } from "../services/driveSync.service.js";
 
 /**
  * Fast path: saves the file, hashes it, creates the document + a
@@ -78,6 +78,22 @@ export const driveSyncStatusController = (req, res) => res.status(200).json(getD
 export const syncDriveController = (req, res) => {
   try {
     syncDriveFolder();
+    return res.status(202).json(getDriveSyncStatus());
+  } catch (error) {
+    return driveSyncError(res, error);
+  }
+};
+
+/** POST /api/documents/sync-drive/pause — Stop: the running import stops after its current file; no automatic syncs until resumed. */
+export const pauseDriveController = (req, res) => {
+  pauseDriveSync();
+  return res.status(200).json(getDriveSyncStatus());
+};
+
+/** POST /api/documents/sync-drive/resume — Continue: un-pauses and picks the import up where it stopped. */
+export const resumeDriveController = (req, res) => {
+  try {
+    resumeDriveSync();
     return res.status(202).json(getDriveSyncStatus());
   } catch (error) {
     return driveSyncError(res, error);

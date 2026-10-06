@@ -369,8 +369,8 @@ export const enqueueIngestion = async ({ filePath, fileName }) => {
 
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
 
-  // Dedup: identical bytes already fully ingested -> skip creating a new
-  // document/job entirely, no processing needed.
+  // Dedup: identical bytes already ingested, or still being ingested -> skip
+  // creating a new document/job entirely (see findByContentHash).
   const existing = await documents.findByContentHash(sha256);
 
   if (existing) {

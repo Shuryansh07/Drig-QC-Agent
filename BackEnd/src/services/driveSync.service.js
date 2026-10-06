@@ -8,6 +8,7 @@ import { enqueueIngestion } from "./ragIngestion.service.js";
 import { kindOfFileName, extensionOfKind, isImageKind } from "./chunking/documentTypes.js";
 import { listUploadTitles } from "../db/documents.js";
 import { logger } from "../utils/logger.js";
+import { retryWithBackoff } from "../utils/retry.js";
 
 // Pulls documents from a Google Drive folder shared as "Anyone with the link"
 // and feeds them through the same enqueueIngestion() the upload route uses.
@@ -59,27 +60,50 @@ const state = {
   lastError: null,
   lastScan: null,
   lastNoChangeAt: null,
+  // Set by the admin panel's Stop button: the running import stops after the
+  // file it is on, and the automatic timer starts nothing, until Continue.
+  // In memory: a backend restart un-pauses.
+  paused: false,
+  // The running sync has seen `paused` and is winding down (it will not import
+  // anything more), as opposed to Stop and Continue both landing while it was
+  // mid-file — then it simply carries on.
+  haltedByPause: false,
+  // Continue pressed while a halted sync was still winding down: start the
+  // next sync as soon as it is done.
+  resumeWhenIdle: false,
   // Each: { id, trigger: "auto" | "manual", started_at, finished_at, found,
-  // total, processed, queued, duplicates, failed, current, error, files }.
+  // total, processed, queued, duplicates, failed, current, error, stopped, files }.
   // `files`, in import order: { name, folder, type, status, document_id,
   // message }, `status` being "waiting" | "downloading" | "queued" |
   // "duplicate" | "failed".
   runs: [],
 };
 
-/** `resourceKeys`: [[fileId, resourceKey], ...] for the items this request touches. */
-const driveFetch = async (url, resourceKeys = []) => {
+/**
+ * `resourceKeys`: [[fileId, resourceKey], ...] for the items this request touches.
+ * Drive answers a burst of downloads with 403 (or 429) rate-limit errors that
+ * clear up after a pause, so both are retried with backoff (2s, 4s, 8s, 16s)
+ * before the file counts as failed.
+ */
+const driveFetch = (url, resourceKeys = []) => {
   const pairs = resourceKeys.filter(([, key]) => key).map(([id, key]) => `${id}/${key}`);
   const headers = pairs.length ? { "X-Goog-Drive-Resource-Keys": pairs.join(",") } : {};
-  const response = await fetch(url, { headers });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const reason = data.error?.message || response.statusText;
-    throw Object.assign(new Error(`Google Drive request failed (${response.status}): ${reason}`), {
-      status: response.status === 404 ? 404 : 502,
-    });
-  }
-  return response;
+  return retryWithBackoff(
+    "Google Drive request",
+    async () => {
+      const response = await fetch(url, { headers });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const reason = data.error?.message || response.statusText;
+        throw Object.assign(new Error(`Google Drive request failed (${response.status}): ${reason}`), {
+          // 429 so retryWithBackoff treats Drive's rate-limit 403 as transient.
+          status: response.status === 403 ? 429 : response.status,
+        });
+      }
+      return response;
+    },
+    { maxRetries: 4, baseDelayMs: 2000 }
+  );
 };
 
 // Some Drive files have no extension in their name ("Install Guide"); their
@@ -207,6 +231,14 @@ const downloadAndEnqueue = async (file) => {
 const ingestFiles = async (run, files) => {
   // One at a time, like the admin panel's uploads: the worker queues the heavy work anyway.
   for (const [index, file] of files.entries()) {
+    if (state.paused) {
+      state.haltedByPause = true;
+      // The files not reached stay "waiting"; they are still new to `seen`,
+      // so the sync started by Continue picks them up.
+      run.stopped = true;
+      logger.info(`[drive-sync] stopped after ${run.processed} of ${run.total} file(s)`);
+      break;
+    }
     const entry = run.files[index];
     run.current = file.fileName;
     entry.status = "downloading";
@@ -243,6 +275,7 @@ const begin = (phase, work) => {
   }
   state.phase = phase;
   state.lastError = null;
+  state.haltedByPause = false;
 
   work()
     .catch((err) => {
@@ -251,6 +284,10 @@ const begin = (phase, work) => {
     })
     .finally(() => {
       state.phase = "idle";
+      if (state.resumeWhenIdle && !state.paused) {
+        state.resumeWhenIdle = false;
+        syncDriveFolder();
+      }
     });
 };
 
@@ -266,9 +303,18 @@ export const scanDriveFolder = () =>
  * to GDRIVE_SYNC_LIMIT), one at a time. `trigger` ("auto" | "manual") is shown
  * in the admin panel's sync history.
  */
-export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
-  begin("scanning", async () => {
+export const syncDriveFolder = ({ trigger = "manual" } = {}) => {
+  // Also what keeps the automatic timer quiet while stopped (its 409s are not logged).
+  if (state.paused) {
+    throw Object.assign(new Error("Drive sync is stopped. Click Continue to resume it."), { status: 409 });
+  }
+  return begin("scanning", async () => {
     const files = (await scan()).slice(0, SYNC_LIMIT);
+    if (state.paused) {
+      // Stop pressed while the folder was being listed
+      state.haltedByPause = true;
+      return;
+    }
     const pending = files.filter((f) => seen.get(f.id) !== f.modifiedTime);
     if (pending.length === 0) {
       state.lastNoChangeAt = new Date().toISOString();
@@ -290,6 +336,7 @@ export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
       failed: 0,
       current: null,
       error: null,
+      stopped: false,
       files: pending.map((f) => ({
         name: f.fileName,
         folder: f.folder,
@@ -303,7 +350,7 @@ export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
     state.phase = "importing";
     try {
       await ingestFiles(run, pending);
-      await scan(); // refresh the "not imported yet" counts
+      if (!run.stopped) await scan(); // refresh the "not imported yet" counts
     } catch (err) {
       run.error = err.message;
       throw err;
@@ -311,6 +358,27 @@ export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
       run.finished_at = new Date().toISOString();
     }
   });
+};
+
+/** Stop button: the running import stops after its current file; automatic syncs wait until Continue. */
+export const pauseDriveSync = () => {
+  state.paused = true;
+  state.resumeWhenIdle = false;
+  logger.info("[drive-sync] paused from the admin panel");
+};
+
+/** Continue button: un-pauses, and starts a sync that picks up where the stopped one left off. */
+export const resumeDriveSync = () => {
+  if (!isDriveSyncConfigured()) {
+    throw Object.assign(new Error("Google Drive sync is not configured (GOOGLE_API_KEY / GDRIVE_FOLDER_ID)"), { status: 503 });
+  }
+  state.paused = false;
+  logger.info("[drive-sync] resumed from the admin panel");
+  if (state.phase === "idle") syncDriveFolder();
+  // Already winding down after Stop: start again once it is done. Otherwise
+  // the running sync never saw the Stop and just carries on.
+  else if (state.haltedByPause) state.resumeWhenIdle = true;
+};
 
 export const getDriveSyncStatus = () => ({
   configured: isDriveSyncConfigured(),
@@ -318,6 +386,7 @@ export const getDriveSyncStatus = () => ({
   interval_minutes: Math.round(INTERVAL_MS / 60000),
   limit: Number.isFinite(SYNC_LIMIT) ? SYNC_LIMIT : null,
   phase: state.phase,
+  paused: state.paused,
   last_error: state.lastError,
   last_no_change_at: state.lastNoChangeAt,
   runs: state.runs,

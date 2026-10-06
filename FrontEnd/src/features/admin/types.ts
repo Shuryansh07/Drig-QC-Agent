@@ -89,6 +89,8 @@ export interface DriveSyncRun {
   failed: number;
   current: string | null;
   error: string | null;
+  /** Stopped before every file was reached; the rest are picked up by Continue. */
+  stopped: boolean;
   files: DriveSyncFile[];
 }
 
@@ -100,6 +102,8 @@ export interface DriveSyncStatus {
   /** GDRIVE_SYNC_LIMIT: only the first N files are synced. null = whole folder. */
   limit: number | null;
   phase: "idle" | "scanning" | "importing";
+  /** Stopped from the panel: no imports (automatic or Sync now) until Continue. */
+  paused: boolean;
   last_error: string | null;
   /** When a sync last ran and found nothing new (such syncs are not kept in `runs`). */
   last_no_change_at: string | null;

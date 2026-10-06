@@ -40,6 +40,10 @@ function useDriveSyncAction(path: string, label: string) {
 
 export const useSyncDrive = () => useDriveSyncAction("/documents/sync-drive", "sync");
 export const useScanDrive = () => useDriveSyncAction("/documents/sync-drive/scan", "scan");
+/** Stop: the running import halts after its current file, and automatic syncs wait. */
+export const usePauseDrive = () => useDriveSyncAction("/documents/sync-drive/pause", "stop");
+/** Continue: picks the import up where it stopped. */
+export const useResumeDrive = () => useDriveSyncAction("/documents/sync-drive/resume", "continue");
 
 /** POST /api/documents/:id/retry. The worker skips vectors it already computed. */
 export function useRetryDocument() {

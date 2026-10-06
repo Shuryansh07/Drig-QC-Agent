@@ -152,11 +152,17 @@ export const listUploadTitles = async (): Promise<Set<string>> => {
   return new Set(rows.map((r) => r.title));
 };
 
+/**
+ * An earlier upload of the same bytes, unless it failed. One still queued or
+ * processing counts too: otherwise the same file arriving twice before the
+ * first copy finishes (a Drive sync restarted mid-run, two admins uploading
+ * it) becomes two documents.
+ */
 export const findByContentHash = async (contentHash: string): Promise<DocumentRecord | null> => {
   const { orgId } = await getDefaultOrg();
   const { rows } = await pool.query(
     `${SELECT} where d.org_id = $1 and d.content_hash = $2
-       and s.ingest_status in ('completed', 'completed_with_errors')
+       and s.ingest_status <> 'failed'
      order by d.created_at desc
      limit 1`,
     [orgId, contentHash]

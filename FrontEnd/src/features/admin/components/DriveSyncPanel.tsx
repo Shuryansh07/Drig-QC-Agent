@@ -5,6 +5,8 @@ import {
   ChevronRight,
   CloudDownload,
   LoaderCircle,
+  Pause,
+  Play,
   ScanSearch,
   TriangleAlert,
 } from "lucide-react";
@@ -15,7 +17,12 @@ import { Progress } from "@/components/ui/progress";
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { useDriveSyncStatus } from "../api/queries";
-import { useScanDrive, useSyncDrive } from "../api/mutations";
+import {
+  usePauseDrive,
+  useResumeDrive,
+  useScanDrive,
+  useSyncDrive,
+} from "../api/mutations";
 import type { DriveSyncRun, DriveSyncStatus } from "../types";
 import { DriveSyncFileList } from "./DriveSyncFileList";
 
@@ -50,6 +57,8 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
   const { data: status, error } = useDriveSyncStatus();
   const sync = useSyncDrive();
   const scan = useScanDrive();
+  const pause = usePauseDrive();
+  const resume = useResumeDrive();
 
   // When an import ends (manual or automatic): refresh the document list, which
   // has the new files now, and say how it went. A scan alone needs no toast:
@@ -65,6 +74,10 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
     });
     const run = status.runs[0];
     if (status.last_error) toast.error(status.last_error);
+    else if (run?.stopped)
+      toast.info(
+        `Drive sync stopped after ${n(run.processed)} of ${n(run.total)} files. Click Continue to resume.`,
+      );
     else if (run)
       toast.success(
         `Drive sync done: ${n(run.queued)} sent, ${n(run.duplicates)} already imported, ${n(run.failed)} failed`,
@@ -89,6 +102,8 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
   }
 
   const busy = status.phase !== "idle";
+  // Stop pressed, but the import is still finishing the file it was on.
+  const stopping = status.paused && busy;
   const start = (action: typeof sync) =>
     action.mutate(undefined, {
       onError: (err) => toast.error(errorMessage(err)),
@@ -105,17 +120,27 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
           <div className="flex items-center gap-2">
             <h2 className="text-body font-semibold">Google Drive sync</h2>
             <Badge
-              variant={busy ? "secondary" : "outline"}
+              variant={
+                busy ? "secondary" : status.paused ? "destructive" : "outline"
+              }
               className="text-micro"
             >
               {busy ? <LoaderCircle className="animate-spin" /> : null}
-              {PHASE[status.phase]}
+              {stopping
+                ? "Stopping…"
+                : status.paused
+                  ? "Stopped"
+                  : PHASE[status.phase]}
             </Badge>
           </div>
           <p className="text-micro text-muted-foreground">
-            {status.auto_sync
-              ? `New files are imported automatically every ${status.interval_minutes} minutes.`
-              : "Automatic sync is off: files are imported only when you click Sync now."}
+            {status.paused
+              ? stopping
+                ? "Stopping after the file being downloaded now…"
+                : "Sync is stopped: nothing is imported, automatic syncs included, until you click Continue."
+              : status.auto_sync
+                ? `New files are imported automatically every ${status.interval_minutes} minutes.`
+                : "Automatic sync is off: files are imported only when you click Sync now."}
             {status.limit !== null
               ? ` Test mode: only the first ${n(status.limit)} files are synced.`
               : ""}
@@ -132,14 +157,35 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
             <ScanSearch />
             Check folder
           </Button>
-          <Button
-            size="sm"
-            disabled={busy || sync.isPending}
-            onClick={() => start(sync)}
-          >
-            <CloudDownload />
-            Sync now
-          </Button>
+          {status.paused ? (
+            <Button
+              size="sm"
+              disabled={resume.isPending}
+              onClick={() => start(resume)}
+            >
+              <Play />
+              Continue
+            </Button>
+          ) : status.phase === "importing" ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pause.isPending}
+              onClick={() => start(pause)}
+            >
+              <Pause />
+              Stop
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              disabled={busy || sync.isPending}
+              onClick={() => start(sync)}
+            >
+              <CloudDownload />
+              Sync now
+            </Button>
+          )}
         </div>
       </div>
 
@@ -283,7 +329,7 @@ function DriveSyncRunItem({
           <p className="text-micro font-medium">
             {run.trigger === "auto" ? "Automatic sync" : "Manual sync"} ·{" "}
             {new Date(run.started_at).toLocaleString()}
-            {running ? " · in progress" : ""}
+            {running ? " · in progress" : run.stopped ? " · stopped" : ""}
           </p>
           <p className="text-micro text-muted-foreground">
             {n(run.processed)} of {n(run.total)} files · {n(run.queued)} sent ·{" "}
@@ -292,6 +338,9 @@ function DriveSyncRunItem({
               {n(run.failed)} failed
             </span>
             {running && run.current ? ` · now: ${run.current}` : ""}
+            {run.stopped
+              ? ` · ${n(run.total - run.processed)} not started`
+              : ""}
           </p>
         </div>
       </button>
