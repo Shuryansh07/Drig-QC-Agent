@@ -158,6 +158,8 @@ export interface ChunkText {
   parentChunkId: string | null;
   /** The parent section's full text, when the chunk has a parent. This is what the answer model reads. */
   parentContent: string | null;
+  /** The matched chunk's own metadata (kind, and imageHash for a figure description). */
+  metadata: Record<string, unknown>;
 }
 
 /**
@@ -169,7 +171,7 @@ export interface ChunkText {
 export const getChunksByIds = async (chunkIds: string[]): Promise<ChunkText[]> => {
   if (chunkIds.length === 0) return [];
   const { rows } = await pool.query(
-    `select c.chunk_id, c.doc_id, c.page_from, c.section_path, c.text, c.parent_chunk_id, p.text as parent_text,
+    `select c.chunk_id, c.doc_id, c.page_from, c.section_path, c.text, c.parent_chunk_id, p.text as parent_text, c.metadata,
             d.title as document_title
        from kb_chunk c
        join kb_document d on d.doc_id = c.doc_id
@@ -186,5 +188,6 @@ export const getChunksByIds = async (chunkIds: string[]): Promise<ChunkText[]> =
     content: r.text,
     parentChunkId: r.parent_chunk_id,
     parentContent: r.parent_text,
+    metadata: r.metadata ?? {},
   }));
 };

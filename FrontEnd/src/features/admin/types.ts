@@ -53,6 +53,68 @@ export interface UploadResponse {
   message?: string;
 }
 
+export interface DriveTypeCount {
+  total: number;
+  /** Not in the knowledge base yet, matched by file name. */
+  remaining: number;
+}
+
+export type DriveSyncFileStatus = "waiting" | "downloading" | "queued" | "duplicate" | "failed";
+
+export interface DriveSyncFile {
+  name: string;
+  /** Path of the Drive subfolder it came from; "" for the main folder. */
+  folder: string;
+  type: string;
+  status: DriveSyncFileStatus;
+  /** Set once the file is in the knowledge base (queued, or the existing duplicate). */
+  document_id: string | null;
+  message: string | null;
+}
+
+/** One sync that found new or changed files. */
+export interface DriveSyncRun {
+  id: number;
+  trigger: "auto" | "manual";
+  started_at: string;
+  /** null while it is still importing. */
+  finished_at: string | null;
+  /** Importable files in the folder at the time. */
+  found: number;
+  /** New or changed files this sync took on. */
+  total: number;
+  processed: number;
+  queued: number;
+  duplicates: number;
+  failed: number;
+  current: string | null;
+  error: string | null;
+  files: DriveSyncFile[];
+}
+
+/** GET /api/documents/sync-drive — also what the sync and scan POSTs return. */
+export interface DriveSyncStatus {
+  configured: boolean;
+  auto_sync: boolean;
+  interval_minutes: number;
+  /** GDRIVE_SYNC_LIMIT: only the first N files are synced. null = whole folder. */
+  limit: number | null;
+  phase: "idle" | "scanning" | "importing";
+  last_error: string | null;
+  /** When a sync last ran and found nothing new (such syncs are not kept in `runs`). */
+  last_no_change_at: string | null;
+  /** Recent syncs that imported something, newest first. */
+  runs: DriveSyncRun[];
+  last_scan: {
+    at: string;
+    supported: number;
+    in_knowledge_base: number;
+    remaining: number;
+    by_type: Record<string, DriveTypeCount>;
+    skipped: Record<string, number>;
+  } | null;
+}
+
 export interface RetryResponse {
   document_id: string;
   status: IngestStatus;

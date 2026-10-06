@@ -13,6 +13,7 @@ import { useAdminDocuments } from "./api/queries";
 import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mutations";
 import { UploadDropzone } from "./components/UploadDropzone";
 import { DocumentRow } from "./components/DocumentRow";
+import { DriveSyncPanel } from "./components/DriveSyncPanel";
 import { MAX_UPLOAD_BYTES, kindOfFile, unsupportedFileMessage } from "./types";
 // import { uuid } from "@/lib/uuid";
 
@@ -168,6 +169,8 @@ export default function AdminKnowledgeScreen() {
             </ul>
           ) : null}
         </section>
+
+        <DriveSyncPanel onShowDocument={handleSearchChange} />
 
         <section aria-label="Documents" className="space-y-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

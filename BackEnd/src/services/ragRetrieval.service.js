@@ -93,6 +93,8 @@ export const retrieveRelevantChunks = async ({ question }) => {
       documentTitle: chunk.documentTitle,
       content: chunk.parentContent ?? chunk.content,
       similarity: match.denseSimilarity,
+      // Lets the answer step fetch the drawing itself (answerGeneration.service.js).
+      imageHash: chunk.metadata?.imageHash ?? null,
     });
   }
 

@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { logger } from "@/lib/logger";
-import type { DeleteResponse, RetryResponse, UploadResponse } from "../types";
+import type { DeleteResponse, DriveSyncStatus, RetryResponse, UploadResponse } from "../types";
 
 /**
  * POST /api/documents/upload (multipart, field "file"). Returns as soon as the
@@ -23,6 +23,23 @@ export function useUploadDocument() {
     onError: (err) => logger.error("[admin upload] failed", err),
   });
 }
+
+/**
+ * POST /api/documents/sync-drive (import) or /sync-drive/scan (count only).
+ * Both return at once with the new status; useDriveSyncStatus() polls from there.
+ */
+function useDriveSyncAction(path: string, label: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => apiFetch<DriveSyncStatus>(path, { method: "POST" }),
+    onSuccess: (status) => queryClient.setQueryData(queryKeys.driveSync(), status),
+    onError: (err) => logger.error(`[admin drive ${label}] failed`, err),
+  });
+}
+
+export const useSyncDrive = () => useDriveSyncAction("/documents/sync-drive", "sync");
+export const useScanDrive = () => useDriveSyncAction("/documents/sync-drive/scan", "scan");
 
 /** POST /api/documents/:id/retry. The worker skips vectors it already computed. */
 export function useRetryDocument() {

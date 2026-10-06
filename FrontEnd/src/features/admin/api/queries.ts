@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
-import { isInFlight, type DocumentListResponse } from "../types";
+import { isInFlight, type DocumentListResponse, type DriveSyncStatus } from "../types";
 
 export const DOCUMENTS_PAGE_SIZE = 10;
 
@@ -26,6 +26,20 @@ export function useAdminDocuments(page: number, search: string) {
     },
     refetchInterval: (query) => (query.state.data?.documents.some((d) => isInFlight(d.status)) ? 2000 : false),
     // Always show fresh progress when returning to the panel.
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  });
+}
+
+/**
+ * GET /api/documents/sync-drive. Polls every 1.5s while a Drive scan or sync
+ * is running, so the panel's progress moves; idle otherwise.
+ */
+export function useDriveSyncStatus() {
+  return useQuery({
+    queryKey: queryKeys.driveSync(),
+    queryFn: () => apiFetch<DriveSyncStatus>("/documents/sync-drive"),
+    refetchInterval: (query) => (query.state.data && query.state.data.phase !== "idle" ? 1500 : false),
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
