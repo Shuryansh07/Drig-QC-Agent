@@ -142,6 +142,16 @@ export const listLiveDocumentTitles = async (limit = 8): Promise<string[]> => {
   return rows.map((r) => r.title.replace(/\.(pdf|docx)$/i, ""));
 };
 
+/** Every uploaded document's title (its original file name), for the Drive sync's "already imported" count. */
+export const listUploadTitles = async (): Promise<Set<string>> => {
+  const { orgId } = await getDefaultOrg();
+  const { rows } = await pool.query<{ title: string }>(
+    `select distinct title from kb_document where org_id = $1 and origin = 'upload'`,
+    [orgId]
+  );
+  return new Set(rows.map((r) => r.title));
+};
+
 export const findByContentHash = async (contentHash: string): Promise<DocumentRecord | null> => {
   const { orgId } = await getDefaultOrg();
   const { rows } = await pool.query(
