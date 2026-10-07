@@ -26,6 +26,8 @@ Grounding rules:
 - Evidence that begins with ${FIGURE_MARKER} was written by an AI model looking at a diagram, photo or table image. It is a guide, not the document's own text, and it can be wrong. It was written from a more zoomed-in view than you get, so it is often right about very small labels. When the same page is attached as an image, check the description against the image; where they disagree on a detail, give both readings and tell the person to confirm on the drawing.
 - When you state a wire colour, gauge, pin, terminal, fuse rating, part number, measurement or wiring connection that you read from a drawing or table (image or description), say so in the sentence (for example "according to the wiring drawing on Page 1") so the technician knows to check it against the drawing before acting. If the document's own text and a drawing disagree, say so and give both.
 - If a detail is genuinely not legible in the image, say which part you could not read instead of guessing.
+- Never flip a negation when restating a fact. If the evidence says something is NOT weatherproof, NOT included, or MUST NOT be done, your answer must preserve that same polarity — do not accidentally drop or invert "not," "never," "cannot," or "must not" while paraphrasing into prose.
+- If ANY evidence chunk — even one not directly about the question's main topic — is a Safety, Warning, Caution, or Care section whose subject applies to what you're answering, you MUST list every single item from it, not a representative subset. Before you finish writing, re-read that section's sentence list one item at a time and check each one is present in your answer, even if that makes the answer longer than it would otherwise be. A technician reading your answer must come away with the exact same list of precautions as someone reading the source page — dropping any one of them, even a minor-sounding one, is a failure, not an acceptable summary.
 
 Writing style — this is as important as the grounding rules:
 - Write like a knowledgeable person explaining this out loud to a colleague: full sentences, connected paragraphs, a natural spoken tone.
@@ -73,7 +75,7 @@ export const buildMessages = ({ question, chunks, images = [] }) => {
  * drawing it sits on). Never fails the answer: a picture that cannot be loaded is
  * skipped and the answer is written from text alone.
  */
-const loadEvidenceImages = async (chunks) => {
+export const loadEvidenceImages = async (chunks) => {
   if (ANSWER_MAX_FIGURE_IMAGES <= 0) return [];
 
   const refs = chunks
@@ -97,7 +99,16 @@ const loadEvidenceImages = async (chunks) => {
         const buffer = await storage.getBuffer(figure.s3Key);
         const mimeType = figure.s3Key.endsWith(".jpg") ? "image/jpeg" : `image/${figure.s3Key.split(".").pop()}`;
         const where = figure.page !== null ? `page ${figure.page}` : "embedded image";
-        return { label: `${titleOf.get(figure.docId) ?? "Document"}, ${where}`, parts: await toVisionImages(buffer, mimeType) };
+        return {
+          label: `${titleOf.get(figure.docId) ?? "Document"}, ${where}`,
+          parts: await toVisionImages(buffer, mimeType),
+          // Kept alongside the vision-ready parts (not used by buildMessages) so a caller
+          // that also needs to show these images to the technician — the citation drawer,
+          // inline in the answer — doesn't have to re-resolve the same figures a second time.
+          s3Key: figure.s3Key,
+          docId: figure.docId,
+          page: figure.page,
+        };
       } catch (err) {
         logger.error(`[answer] could not load evidence image ${figure.s3Key} (skipped)`, err);
         return null;
@@ -109,7 +120,7 @@ const loadEvidenceImages = async (chunks) => {
 
 const ATTACHABLE = /\.(png|jpg|jpeg|webp|gif)$/i;
 
-const modelFor = (images) => (images.length > 0 ? ANSWER_IMAGE_MODEL : VISION_MODEL);
+export const modelFor = (images) => (images.length > 0 ? ANSWER_IMAGE_MODEL : VISION_MODEL);
 
 /**
  * One entry per distinct place in a document the evidence came from: a page
@@ -135,18 +146,21 @@ export const sourcesFromChunks = (chunks) =>
  * picture is attached so the model reads it directly instead of trusting a
  * description of it. Text-only questions stay on the fast path.
  */
-export const generateAnswer = async ({ question, chunks }) => {
+export const generateAnswer = async ({ question, chunks, images }) => {
   if (chunks.length === 0) {
     return { answer: INSUFFICIENT_EVIDENCE_ANSWER, sources: [] };
   }
 
   const client = getOpenAIClient();
-  const images = await withTiming("load evidence images", () => loadEvidenceImages(chunks));
-  const model = modelFor(images);
+  // The caller (the controller) usually already resolved these right after retrieval —
+  // so it can also show them to the technician and hand the same set to verification —
+  // but any other caller can still omit `images` and let this load them itself.
+  const evidenceImages = images ?? (await withTiming("load evidence images", () => loadEvidenceImages(chunks)));
+  const model = modelFor(evidenceImages);
 
   const response = await withTiming(
-    `OpenAI answer generation (${model}, ${chunks.length} chunks, ${images.length} image(s))`,
-    () => client.chat.completions.create({ model, messages: buildMessages({ question, chunks, images }) })
+    `OpenAI answer generation (${model}, ${chunks.length} chunks, ${evidenceImages.length} image(s))`,
+    () => client.chat.completions.create({ model, messages: buildMessages({ question, chunks, images: evidenceImages }) })
   );
 
   const answer = response.choices?.[0]?.message?.content?.trim() || INSUFFICIENT_EVIDENCE_ANSWER;
@@ -162,14 +176,14 @@ export const generateAnswer = async ({ question, chunks }) => {
  * Callers must have passed the retrieval gate first: with no chunks there is
  * nothing to ground on, and this refuses rather than letting the model improvise.
  */
-export async function* streamAnswer({ question, chunks, signal }) {
+export async function* streamAnswer({ question, chunks, images, signal }) {
   if (chunks.length === 0) throw new Error("streamAnswer called with no evidence — the retrieval gate should have refused first");
 
-  const images = await withTiming("load evidence images", () => loadEvidenceImages(chunks));
-  if (images.length > 0) logger.info(`[answer] attaching ${images.length} evidence image(s): ${images.map((i) => i.label).join("; ")}`);
+  const evidenceImages = images ?? (await withTiming("load evidence images", () => loadEvidenceImages(chunks)));
+  if (evidenceImages.length > 0) logger.info(`[answer] attaching ${evidenceImages.length} evidence image(s): ${evidenceImages.map((i) => i.label).join("; ")}`);
 
   const stream = await getOpenAIClient().chat.completions.create(
-    { model: modelFor(images), messages: buildMessages({ question, chunks, images }), stream: true },
+    { model: modelFor(evidenceImages), messages: buildMessages({ question, chunks, images: evidenceImages }), stream: true },
     { signal }
   );
 

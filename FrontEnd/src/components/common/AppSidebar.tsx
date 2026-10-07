@@ -45,9 +45,9 @@ export function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader className="gap-3 p-3">
-        <Link to="/" onClick={closeOnMobile} className="flex-col gap-2.5 px-1 py-1">
-          <img src="/drig_logo.png" alt="" className="size-10 object-fit w-fit rounded-lg mx-auto" />
-          <div className="text-base font-semibold tracking-tight text-center">DRIG Support</div>
+        <Link to="/" onClick={closeOnMobile} className="flex flex-col items-center">
+          <img src="/drig_logo.png" alt="" className="object-contain h-20" />
+          <span className="text-base font-semibold tracking-tight">DRIG Support</span>
         </Link>
 
         <SidebarMenu>

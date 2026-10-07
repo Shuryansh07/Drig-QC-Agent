@@ -48,17 +48,30 @@ export function SourceDrawer() {
             </p>
           ) : (
             <>
+              {citation?.imageUrl ? (
+                <a
+                  href={citation.imageUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="border-border bg-card mb-4 block overflow-hidden rounded-2xl border"
+                >
+                  <img
+                    src={citation.imageUrl}
+                    alt={citation.label}
+                    className="max-h-[28rem] w-full object-contain"
+                  />
+                </a>
+              ) : null}
+
               {citation?.excerpt ? (
                 <blockquote className="border-primary bg-muted text-step text-answer-fg border-l-4 p-4">
                   {citation.excerpt}
                 </blockquote>
+              ) : !citation?.imageUrl ? (
+                <p className="border-border text-body text-muted-foreground mt-4 rounded-lg border border-dashed p-6 text-center">
+                  Nothing to show for this source.
+                </p>
               ) : null}
-
-              {/* TODO: PDF page render, wiring-sheet row, or call card with audio,
-                  selected on citation.kind. Needs the document service. */}
-              <div className="border-border text-body text-muted-foreground mt-4 rounded-lg border border-dashed p-6 text-center">
-                Document view is not built yet
-              </div>
             </>
           )}
         </div>

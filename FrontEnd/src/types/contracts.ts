@@ -62,6 +62,17 @@ export interface Citation {
   excerpt?: string;
   documentId?: string;
   audioUrl?: string;
+  /** The diagram/photo described on this same page, if one exists. Time-limited — don't persist it. */
+  imageUrl?: string;
+}
+
+/** A diagram or photo the answer was actually grounded on — not every retrieved source has one. */
+export interface AnswerImage {
+  label: string;
+  /** Time-limited (the backend signs it for an hour) — re-fetch the turn rather than cache this past a session. */
+  url: string;
+  page: number | null;
+  documentId: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -116,6 +127,8 @@ export interface Turn {
   text: string;
   steps: AnswerStep[];
   citations: Citation[];
+  /** The evidence diagrams/photos the answer was grounded on, if any. */
+  images: AnswerImage[];
   gateOutcome: GateOutcome | null;
   clarify: ClarifyRequest | null;
   notCovered: NotCoveredInfo | null;
@@ -124,6 +137,9 @@ export interface Turn {
   createdAt: string;
   /** Wall-clock time (ms) from request sent to answer received. Agent turns only. */
   durationMs?: number;
+  /** False when Checks 5-7 flagged a possible issue in an "answered" turn — the
+   *  text is still the real generated answer, not withheld; the UI cautions on it. */
+  verified?: boolean;
 }
 
 export interface Conversation {
@@ -141,6 +157,7 @@ export type ServerEvent =
   | { type: "clarify"; clarify: ClarifyRequest }
   | { type: "step"; step: AnswerStep }
   | { type: "citation"; citation: Citation }
+  | { type: "images"; images: AnswerImage[] }
   | { type: "not_covered"; notCovered: NotCoveredInfo }
   | { type: "conflict"; conflict: ConflictInfo }
   | { type: "deadline_warning"; elapsedMs: number }

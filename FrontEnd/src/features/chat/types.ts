@@ -1,4 +1,5 @@
 import type {
+  AnswerImage,
   AnswerStep,
   Citation,
   ClarifyRequest,
@@ -34,6 +35,8 @@ export interface StreamingTurn {
   /** The answer as it arrives, before it is committed as a finished turn. */
   partialText: string;
   citations: Citation[];
+  /** The evidence diagrams/photos the answer is being grounded on, if any. */
+  images: AnswerImage[];
   gateOutcome: GateOutcome | null;
   clarify: ClarifyRequest | null;
   notCovered: NotCoveredInfo | null;

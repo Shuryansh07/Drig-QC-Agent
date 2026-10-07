@@ -1,5 +1,6 @@
 import { useAppSelector } from "@/app/hooks";
 import { AnswerSteps } from "@/features/chat/components/AnswerSteps";
+import { AnswerImages } from "@/features/chat/components/AnswerImages";
 import { AssistantMessage } from "@/features/chat/components/AssistantMessage";
 import { ClarifyPrompt } from "@/features/chat/components/ClarifyPrompt";
 import { NotCoveredCard } from "@/features/chat/components/NotCoveredCard";
@@ -88,6 +89,10 @@ export function StreamingTurnView({
           onRequestEngineer={onRequestEngineer}
         />
       ) : null}
+
+      {/* Same gate as `steps` below: an answer that gets retracted never shows the
+          evidence it was (wrongly) grounded on either — nothing orphaned on screen. */}
+      {!stream.error ? <AnswerImages images={stream.images} /> : null}
 
       {steps.length > 0 ? (
         <AnswerSteps

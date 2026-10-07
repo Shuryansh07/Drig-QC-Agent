@@ -7,6 +7,7 @@ import {
   DeleteObjectCommand,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // The API and the worker are separate processes (separate containers on ECS), so an
 // uploaded file cannot be handed over on local disk. The API puts it in S3 and the
@@ -84,6 +85,16 @@ export const getBuffer = async (key) => {
     throw err;
   }
 };
+
+/**
+ * A time-limited URL the browser can load directly (an <img src>) without the
+ * backend ever streaming the bytes itself — the bucket stays private; this is
+ * the standard way to hand out one object from it. Defaults to 1 hour: long
+ * enough for one chat session's citation drawer and inline answer images to
+ * stay loadable, short enough that a copied link doesn't work indefinitely.
+ */
+export const getPresignedUrl = async (key, expiresInSeconds = 3600) =>
+  getSignedUrl(s3(), new GetObjectCommand({ Bucket: bucket(), Key: key }), { expiresIn: expiresInSeconds });
 
 export const exists = async (key) => {
   try {

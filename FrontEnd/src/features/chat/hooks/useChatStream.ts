@@ -3,14 +3,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAppDispatch } from "@/app/hooks";
 import { chatActions } from "@/features/chat/chatSlice";
 import { outboxActions } from "@/features/outbox/outboxSlice";
-import { parseWireEvent, type WireSource } from "@/features/chat/streamEvents";
+import { parseWireEvent, type WireImage, type WireSource } from "@/features/chat/streamEvents";
 import { apiUrl, authHeaders, ApiError } from "@/lib/api-client";
 import { readSSEFrames } from "@/lib/sse";
 import { queryKeys } from "@/lib/query-client";
 import { isOnline } from "@/lib/offline";
 import { logger } from "@/lib/logger";
 import { uuid } from "@/lib/uuid";
-import type { AnswerStep, Citation, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
+import type { AnswerImage, AnswerStep, Citation, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
 // import { uuid } from "@/lib/uuid";
 
 // No auth/tenant selection UI exists yet (AuthProvider is a stub — see
@@ -56,12 +56,16 @@ const toCitations = (sources: WireSource[]): Citation[] =>
     ).values(),
   );
 
+const toImages = (images: WireImage[]): AnswerImage[] =>
+  images.map((i) => ({ label: i.label, url: i.url, page: i.page, documentId: i.document_id }));
+
 const agentTurn = (overrides: Partial<Turn>): Turn => ({
   turnId: uuid(),
   role: "agent",
   text: "",
   steps: [],
   citations: [],
+  images: [],
   gateOutcome: null,
   clarify: null,
   notCovered: null,
@@ -106,6 +110,7 @@ export function useChatStream(sessionId: string) {
         text: trimmed,
         steps: [],
         citations: [],
+        images: [],
         gateOutcome: null,
         clarify: null,
         notCovered: null,
@@ -131,11 +136,12 @@ export function useChatStream(sessionId: string) {
       };
 
       let citations: Citation[] = [];
+      let images: AnswerImage[] = [];
       let finished = false;
 
-      const commitAnswer = (answer: string, durationMs: number) => {
+      const commitAnswer = (answer: string, durationMs: number, verified: boolean) => {
         const step: AnswerStep = { n: 1, text: answer, sourceChunkIds: citations.map((c) => c.chunkId) };
-        const turn = agentTurn({ text: answer, steps: [step], citations, gateOutcome: "answered", durationMs });
+        const turn = agentTurn({ text: answer, steps: [step], citations, images, gateOutcome: "answered", durationMs, verified });
         dispatch(chatActions.serverEvent({ type: "done", turn }));
         appendTurn(queryClient, sessionId, turn);
         dispatch(chatActions.clearStream());
@@ -179,6 +185,11 @@ export function useChatStream(sessionId: string) {
               }
               break;
 
+            case "images":
+              images = toImages(event.images);
+              dispatch(chatActions.serverEvent({ type: "images", images }));
+              break;
+
             case "delta":
               pendingText += event.text;
               if (!frame) frame = requestAnimationFrame(flushText);
@@ -197,7 +208,7 @@ export function useChatStream(sessionId: string) {
             case "complete":
               finished = true;
               flushText();
-              commitAnswer(event.answer, event.durationMs);
+              commitAnswer(event.answer, event.durationMs, event.verified);
               break;
 
             case "error":

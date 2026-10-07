@@ -16,9 +16,57 @@
       content="Grounded install and wiring support for field technicians."
     />
     <title>DRIG Tech Support</title>
+    <style>
+      /* Shown only until React mounts and replaces #root's contents — matches
+         the app's own light/dark background tokens so there's no flash between
+         this and the real screen underneath it. */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        background: oklch(1 0 0);
+        font-family: system-ui, sans-serif;
+      }
+      #boot-splash img {
+        width: 64px;
+        height: 64px;
+        border-radius: 9999px;
+        animation: boot-splash-pulse 1.4s ease-in-out infinite;
+      }
+      #boot-splash p {
+        color: oklch(0.45 0 0);
+        font-size: 0.9rem;
+      }
+      @keyframes boot-splash-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+      @media (prefers-color-scheme: dark) {
+        #boot-splash {
+          background: oklch(0.21 0 0);
+        }
+        #boot-splash p {
+          color: oklch(0.76 0 0);
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-splash" role="status" aria-live="polite">
+        <img src="/favicon.png" alt="" />
+        <p>Loading DRIG Support…</p>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

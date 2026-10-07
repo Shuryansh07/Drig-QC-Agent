@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useParams } from "react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAppDispatch, useAppSelector } from "@/app/hooks";
 import { chatActions } from "@/features/chat/chatSlice";
 import { uiActions } from "@/features/ui/uiSlice";
@@ -15,6 +16,9 @@ import { HandoffSheet } from "@/features/handoff/components/HandoffSheet";
 import { PageShell } from "@/components/common/PageShell";
 import { Button } from "@/components/ui/button";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { apiFetch } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-client";
+import type { Citation } from "@/types/contracts";
 
 const SUGGESTIONS = [
   "Where should the tracking unit be mounted?",
@@ -25,6 +29,7 @@ const SUGGESTIONS = [
 export default function ChatScreen() {
   const { sessionId = "" } = useParams();
   const dispatch = useAppDispatch();
+  const queryClient = useQueryClient();
   const online = useOnlineStatus();
 
   const draft = useAppSelector((s) => s.chat.draft);
@@ -43,9 +48,36 @@ export default function ChatScreen() {
     [dispatch],
   );
 
+  // A citation backed by a diagram/photo opens straight to it in a new tab — the
+  // drawer is only for the text-only case, which has nothing else to show. The
+  // tab opens blank synchronously (inside the click) so browsers don't treat the
+  // post-fetch navigation as a blocked popup.
   const openCitation = useCallback(
-    (chunkId: string) => dispatch(uiActions.citationOpened(chunkId)),
-    [dispatch],
+    (chunkId: string) => {
+      // No noopener/noreferrer: those make window.open() return null, and the
+      // reference is required to navigate this tab once the fetch below resolves.
+      const tab = window.open("", "_blank");
+
+      void queryClient
+        .fetchQuery({
+          queryKey: queryKeys.citation(chunkId),
+          staleTime: 60 * 60 * 1000,
+          queryFn: () => apiFetch<Citation>(`/citations/${chunkId}`),
+        })
+        .then((citation) => {
+          if (citation.imageUrl && tab) {
+            tab.location.href = citation.imageUrl;
+          } else {
+            tab?.close();
+            dispatch(uiActions.citationOpened(chunkId));
+          }
+        })
+        .catch(() => {
+          tab?.close();
+          dispatch(uiActions.citationOpened(chunkId));
+        });
+    },
+    [dispatch, queryClient],
   );
 
   const turns = conversation?.turns ?? [];

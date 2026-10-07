@@ -1,5 +1,6 @@
 import type { Resolution, Turn } from "@/types/contracts";
 import { AnswerSteps } from "@/features/chat/components/AnswerSteps";
+import { AnswerImages } from "@/features/chat/components/AnswerImages";
 import { ClarifyPrompt } from "@/features/chat/components/ClarifyPrompt";
 import { NotCoveredCard } from "@/features/chat/components/NotCoveredCard";
 import { ConflictCard } from "@/features/chat/components/ConflictCard";
@@ -56,6 +57,8 @@ export function TurnView({
         />
       ) : null}
 
+      <AnswerImages images={turn.images} />
+
       {turn.steps.length > 0 ? (
         <AnswerSteps
           steps={turn.steps}
@@ -72,6 +75,12 @@ export function TurnView({
 
       {turn.gateOutcome === "answered" ? (
         <ResolutionBar value={turn.resolution} onChange={onResolution} />
+      ) : null}
+
+      {turn.gateOutcome === "answered" && turn.verified === false ? (
+        <p role="alert" className="text-warn-fg text-xs">
+          Kindly verify these inforamtion with refernce documents.
+        </p>
       ) : null}
     </AssistantMessage>
   );
