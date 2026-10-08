@@ -89,11 +89,19 @@ export interface DriveSyncRun {
   failed: number;
   current: string | null;
   error: string | null;
+  /** True when an admin stopped it before every file was taken on. */
+  stopped: boolean;
   files: DriveSyncFile[];
 }
 
 /** GET /api/documents/sync-drive — also what the sync and scan POSTs return. */
 export interface DriveSyncStatus {
+  /** Worker jobs from the Drive sync not finished yet; Stop cancels them. */
+  pending_jobs: number;
+  /** Files a stopped, failed or interrupted sync left to do; the next Sync resumes with them. */
+  resumable: number;
+  /** Stop was pressed and the sync is winding down. */
+  stopping: boolean;
   configured: boolean;
   auto_sync: boolean;
   interval_minutes: number;

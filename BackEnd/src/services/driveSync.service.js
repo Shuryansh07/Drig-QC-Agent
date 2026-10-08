@@ -4,15 +4,23 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { TEMP_UPLOAD_DIR } from "../middleware/upload.middleware.js";
-import { enqueueIngestion } from "./ragIngestion.service.js";
+import { enqueueIngestion, discardDocument } from "./ragIngestion.service.js";
 import { kindOfFileName, extensionOfKind, isImageKind } from "./chunking/documentTypes.js";
 import { listUploadTitles } from "../db/documents.js";
+import { cancelJobsBySource, countActiveJobsBySource } from "../db/jobs.js";
+import * as ledger from "../db/driveSync.js";
 import { logger } from "../utils/logger.js";
 
 // Pulls documents from a Google Drive folder shared as "Anyone with the link"
 // and feeds them through the same enqueueIngestion() the upload route uses.
 // A link-shared folder is public, so an API key is all the Drive API needs —
 // no service account, no access to the owner's account.
+//
+// The sync runs here, in the backend, not in the browser: reloading or closing
+// the admin page does not touch it, and the page just reads the progress back.
+// Every file's outcome is written to Postgres (drive_sync_file / drive_sync_run),
+// so Stop, a crash or a restart never loses its place: the next Sync skips what
+// is already imported and carries on with what was waiting, failed or cancelled.
 const API_BASE = "https://www.googleapis.com/drive/v3";
 const API_KEY = process.env.GOOGLE_API_KEY;
 const FOLDER_ID = process.env.GDRIVE_FOLDER_ID;
@@ -27,6 +35,18 @@ const SYNC_LIMIT = parseInt(process.env.GDRIVE_SYNC_LIMIT || "0", 10) || Infinit
 // Off unless explicitly "true": a sync only starts from the admin panel's button.
 const AUTO_SYNC = process.env.GDRIVE_AUTO_SYNC === "true";
 const INTERVAL_MS = parseInt(process.env.GDRIVE_SYNC_INTERVAL_MS || "600000", 10);
+// Minimum gap between two Google API requests (listing and downloads alike),
+// so a big folder does not trip Google's rate limit (HTTP 429).
+const REQUEST_DELAY_MS = parseInt(process.env.GDRIVE_REQUEST_DELAY_MS || "1000", 10);
+// Folder listings are cheap for Google and there are many of them, so they wait less.
+const LIST_DELAY_MS = parseInt(process.env.GDRIVE_LIST_DELAY_MS || "200", 10);
+// When Google still answers 429 / rate-limit 403 / 5xx: wait (Retry-After, else
+// 2s, 4s, 8s... up to 60s) and try again this many times before giving up on the file.
+const MAX_RETRIES = parseInt(process.env.GDRIVE_MAX_RETRIES || "6", 10);
+
+// Tags the worker jobs this sync creates, so Stop can find and cancel them.
+const JOB_SOURCE = "drive-sync";
+const MAX_RUNS = 10;
 
 // Google-native files have no bytes of their own; Drive exports them. PDF is
 // the export to use: Drive renders identical bytes for an unchanged file, so
@@ -39,47 +59,73 @@ const GOOGLE_EXPORTS = {
 
 export const isDriveSyncConfigured = () => Boolean(API_KEY && FOLDER_ID);
 
-// fileId -> modifiedTime of files already handed to enqueueIngestion, so a
-// sync only downloads what is new or changed. In memory only: after a restart
-// everything is downloaded once more, and the sha256 dedup in
-// enqueueIngestion() turns the unchanged ones into no-ops.
-const seen = new Map();
-
-// Syncs that imported something, newest first, so the admin panel can show
-// what every recent sync did. A sync that found nothing new is not kept —
-// only its time, in lastNoChangeAt — so the 10-minute automatic syncs don't
-// push the real ones out. In memory: a backend restart clears it.
-const MAX_RUNS = 10;
-let nextRunId = 1;
-
-// What the admin panel polls. `phase` is "idle", "scanning" (listing the
-// folder) or "importing" (downloading + enqueueing).
+// What the admin panel polls, besides the history in Postgres. `phase` is
+// "idle", "scanning" (listing the folder) or "importing" (downloading + enqueueing).
 const state = {
   phase: "idle",
   lastError: null,
   lastScan: null,
   lastNoChangeAt: null,
-  // Each: { id, trigger: "auto" | "manual", started_at, finished_at, found,
-  // total, processed, queued, duplicates, failed, current, error, files }.
-  // `files`, in import order: { name, folder, type, status, document_id,
-  // message }, `status` being "waiting" | "downloading" | "queued" |
-  // "duplicate" | "failed".
-  runs: [],
+  // The supported files of the last listing, kept to refresh lastScan after a sync without listing again.
+  lastFiles: null,
+  stopRequested: false,
+  // The running scan/sync, so Stop can wait for it to wind down.
+  work: null,
 };
 
+/** Thrown inside a running scan/sync once Stop was pressed. */
+class StopError extends Error {
+  constructor() {
+    super("Stopped");
+  }
+}
+
+/** Waits `ms`, but ends early (and throws) if Stop is pressed meanwhile. */
+const sleep = async (ms) => {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (state.stopRequested) throw new StopError();
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, until - Date.now())));
+  }
+  if (state.stopRequested) throw new StopError();
+};
+
+let lastRequestAt = 0;
+/** Keeps `delay` ms between Google requests. */
+const pace = async (delay) => {
+  const wait = lastRequestAt + delay - Date.now();
+  lastRequestAt = Math.max(Date.now(), lastRequestAt + delay);
+  if (wait > 0) await sleep(wait);
+  else if (state.stopRequested) throw new StopError();
+};
+
+const isRateLimited = (status, data) =>
+  status === 429 ||
+  (status === 403 && /rate|quota/i.test(`${data.error?.message ?? ""} ${JSON.stringify(data.error?.errors ?? [])}`));
+
 /** `resourceKeys`: [[fileId, resourceKey], ...] for the items this request touches. */
-const driveFetch = async (url, resourceKeys = []) => {
+const driveFetch = async (url, resourceKeys = [], delay = REQUEST_DELAY_MS) => {
   const pairs = resourceKeys.filter(([, key]) => key).map(([id, key]) => `${id}/${key}`);
   const headers = pairs.length ? { "X-Goog-Drive-Resource-Keys": pairs.join(",") } : {};
-  const response = await fetch(url, { headers });
-  if (!response.ok) {
+
+  for (let attempt = 0; ; attempt++) {
+    await pace(delay);
+    const response = await fetch(url, { headers });
+    if (response.ok) return response;
+
     const data = await response.json().catch(() => ({}));
     const reason = data.error?.message || response.statusText;
+    if ((isRateLimited(response.status, data) || response.status >= 500) && attempt < MAX_RETRIES) {
+      const retryAfter = Number(response.headers.get("retry-after")) * 1000;
+      const wait = retryAfter > 0 ? retryAfter : Math.min(60000, 2000 * 2 ** attempt);
+      logger.warn(`[drive-sync] Google answered ${response.status}; retrying in ${Math.round(wait / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await sleep(wait);
+      continue;
+    }
     throw Object.assign(new Error(`Google Drive request failed (${response.status}): ${reason}`), {
       status: response.status === 404 ? 404 : 502,
     });
   }
-  return response;
 };
 
 // Some Drive files have no extension in their name ("Install Guide"); their
@@ -136,7 +182,7 @@ const listFiles = async (folderId, resourceKey, acc = { files: [], skipped: {} }
       key: API_KEY,
     });
     if (pageToken) params.set("pageToken", pageToken);
-    const data = await (await driveFetch(`${API_BASE}/files?${params}`, [[folderId, resourceKey]])).json();
+    const data = await (await driveFetch(`${API_BASE}/files?${params}`, [[folderId, resourceKey]], LIST_DELAY_MS)).json();
 
     for (const f of data.files ?? []) {
       if (f.mimeType === FOLDER_MIME) {
@@ -167,9 +213,8 @@ const listFiles = async (folderId, resourceKey, acc = { files: [], skipped: {} }
   return acc;
 };
 
-/** Lists the whole folder and records the counts the admin panel shows. */
-const scan = async () => {
-  const { files, skipped } = await listFiles(FOLDER_ID, FOLDER_RESOURCE_KEY);
+/** Counts the listed files and how many are not in the knowledge base yet, for the admin panel. */
+const summarize = async (files, skipped) => {
   const titles = await listUploadTitles();
   const byType = {};
   let remaining = 0;
@@ -190,6 +235,13 @@ const scan = async () => {
     byType,
     skipped,
   };
+  state.lastFiles = { files, skipped };
+};
+
+/** Lists the whole folder and records the counts the admin panel shows. */
+const scan = async () => {
+  const { files, skipped } = await listFiles(FOLDER_ID, FOLDER_RESOURCE_KEY);
+  await summarize(files, skipped);
   return files;
 };
 
@@ -199,35 +251,42 @@ const downloadAndEnqueue = async (file) => {
   const url = file.exportPdf
     ? `${API_BASE}/files/${file.id}/export?${new URLSearchParams({ mimeType: "application/pdf", key: API_KEY })}`
     : `${API_BASE}/files/${file.id}?${new URLSearchParams({ alt: "media", supportsAllDrives: "true", key: API_KEY })}`;
-  const response = await driveFetch(url, [[file.id, file.resourceKey]]);
-  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(filePath));
-  return enqueueIngestion({ filePath, fileName: file.fileName });
+  try {
+    const response = await driveFetch(url, [[file.id, file.resourceKey]]);
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(filePath));
+  } catch (err) {
+    await fs.promises.rm(filePath, { force: true });
+    throw err;
+  }
+  return enqueueIngestion({ filePath, fileName: file.fileName, source: JOB_SOURCE });
 };
 
 const ingestFiles = async (run, files) => {
   // One at a time, like the admin panel's uploads: the worker queues the heavy work anyway.
-  for (const [index, file] of files.entries()) {
-    const entry = run.files[index];
-    run.current = file.fileName;
-    entry.status = "downloading";
+  for (const file of files) {
+    if (state.stopRequested) break;
+    await ledger.updateRun(run.id, { currentFile: file.fileName });
+    await ledger.setFileState(file.id, { status: "downloading" });
     try {
       const result = await downloadAndEnqueue(file);
-      seen.set(file.id, file.modifiedTime);
-      entry.status = result.duplicate ? "duplicate" : "queued";
-      entry.document_id = result.documentId;
+      await ledger.setFileState(file.id, { status: result.duplicate ? "duplicate" : "queued", docId: result.documentId });
       if (result.duplicate) run.duplicates++;
       else run.queued++;
       logger.info(`[drive-sync] "${file.fileName}" -> ${result.duplicate ? "duplicate" : `queued as ${result.documentId}`}`);
     } catch (err) {
-      // Left out of `seen`, so the next sync tries it again.
+      if (err instanceof StopError) {
+        // Not done, not failed: it waits for the next Sync.
+        await ledger.setFileState(file.id, { status: "waiting" });
+        break;
+      }
       run.failed++;
-      entry.status = "failed";
-      entry.message = err.message;
+      await ledger.setFileState(file.id, { status: "failed", message: err.message });
       logger.error(`[drive-sync] "${file.fileName}" failed`, err);
     }
     run.processed++;
+    await ledger.updateRun(run.id, run);
   }
-  run.current = null;
+  run.stopped = state.stopRequested;
 };
 
 /**
@@ -243,14 +302,20 @@ const begin = (phase, work) => {
   }
   state.phase = phase;
   state.lastError = null;
+  state.stopRequested = false;
 
-  work()
+  state.work = work()
     .catch((err) => {
+      if (err instanceof StopError) {
+        logger.info(`[drive-sync] ${phase} stopped`);
+        return;
+      }
       state.lastError = err.message;
       logger.error(`[drive-sync] ${phase} failed`, err);
     })
     .finally(() => {
       state.phase = "idle";
+      state.work = null;
     });
 };
 
@@ -262,65 +327,82 @@ export const scanDriveFolder = () =>
   });
 
 /**
- * Lists the folder, then downloads and enqueues the new or changed files (up
- * to GDRIVE_SYNC_LIMIT), one at a time. `trigger` ("auto" | "manual") is shown
- * in the admin panel's sync history.
+ * Lists the folder, then downloads and enqueues what the ledger says is still
+ * to do (new or changed files, plus ones left waiting, failed or cancelled by
+ * an earlier run), one at a time, up to GDRIVE_SYNC_LIMIT files of the folder.
+ * `trigger` ("auto" | "manual") is shown in the admin panel's sync history.
  */
 export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
   begin("scanning", async () => {
     const files = (await scan()).slice(0, SYNC_LIMIT);
-    const pending = files.filter((f) => seen.get(f.id) !== f.modifiedTime);
+    const known = new Map((await ledger.listLedger()).map((row) => [row.file_id, row]));
+    const pending = files.filter((f) => {
+      const row = known.get(f.id);
+      return !row || row.modified_time !== f.modifiedTime || !["queued", "duplicate"].includes(row.status);
+    });
     if (pending.length === 0) {
       state.lastNoChangeAt = new Date().toISOString();
       logger.info(`[drive-sync] ${trigger} sync: no new or changed files`);
       return;
     }
-    logger.info(`[drive-sync] ${trigger} sync: importing ${pending.length} new or changed file(s) of ${files.length}`);
+    const resumed = pending.filter((f) => known.has(f.id) && known.get(f.id).modified_time === f.modifiedTime).length;
+    logger.info(`[drive-sync] ${trigger} sync: importing ${pending.length} file(s) of ${files.length} (${resumed} resumed from an earlier run)`);
 
-    const run = {
-      id: nextRunId++,
-      trigger,
-      started_at: new Date().toISOString(),
-      finished_at: null,
-      found: files.length,
-      total: pending.length,
-      processed: 0,
-      queued: 0,
-      duplicates: 0,
-      failed: 0,
-      current: null,
-      error: null,
-      files: pending.map((f) => ({
-        name: f.fileName,
-        folder: f.folder,
-        type: f.type,
-        status: "waiting",
-        document_id: null,
-        message: null,
-      })),
-    };
-    state.runs = [run, ...state.runs].slice(0, MAX_RUNS);
+    const run = { id: await ledger.createRun(trigger, files.length, pending.length), processed: 0, queued: 0, duplicates: 0, failed: 0, stopped: false };
+    await ledger.assignFilesToRun(
+      run.id,
+      pending.map((f) => ({ id: f.id, name: f.fileName, folder: f.folder, type: f.type, modifiedTime: f.modifiedTime }))
+    );
     state.phase = "importing";
     try {
       await ingestFiles(run, pending);
-      await scan(); // refresh the "not imported yet" counts
+      if (!run.stopped) await summarize(state.lastFiles.files, state.lastFiles.skipped); // refresh the "not imported yet" counts
     } catch (err) {
-      run.error = err.message;
+      await ledger.updateRun(run.id, { error: err.message });
       throw err;
     } finally {
-      run.finished_at = new Date().toISOString();
+      await ledger.updateRun(run.id, { ...run, currentFile: null, finished: true });
     }
   });
 
-export const getDriveSyncStatus = () => ({
+/**
+ * Stops the scan or sync: the file in flight is dropped, nothing more is
+ * downloaded, and the worker jobs the sync already queued are cancelled (a job
+ * not yet claimed is never taken; one already running stops at its next
+ * checkpoint). Their files go back to "waiting" in the ledger, so the next Sync
+ * picks up exactly there.
+ */
+export const stopDriveSync = async () => {
+  const active = await countActiveJobsBySource(JOB_SOURCE);
+  if (state.phase === "idle" && active === 0) {
+    throw Object.assign(new Error("No Drive sync is running"), { status: 409 });
+  }
+  state.stopRequested = true;
+  // Let the loop wind down first, or the file it is on could queue a job after the cancel below.
+  await state.work;
+
+  const cancelled = await cancelJobsBySource(JOB_SOURCE);
+  const docIds = cancelled.map((job) => job.docId).filter(Boolean);
+  await ledger.requeueFilesOfDocs(docIds);
+  // A running job's worker discards its own document; the rest never started, so drop theirs here
+  // (otherwise a later sync would take the leftover document for a duplicate and never process it).
+  await Promise.all(cancelled.filter((job) => job.docId && !job.wasRunning).map((job) => discardDocument(job.docId)));
+  logger.info(`[drive-sync] stopped: ${cancelled.length} job(s) cancelled, ${docIds.length} file(s) waiting for the next sync`);
+};
+
+export const getDriveSyncStatus = async () => ({
   configured: isDriveSyncConfigured(),
   auto_sync: AUTO_SYNC,
   interval_minutes: Math.round(INTERVAL_MS / 60000),
   limit: Number.isFinite(SYNC_LIMIT) ? SYNC_LIMIT : null,
   phase: state.phase,
+  stopping: state.stopRequested && state.phase !== "idle",
+  pending_jobs: await countActiveJobsBySource(JOB_SOURCE),
+  /** Files a stopped, failed or interrupted sync left to do: the next Sync resumes with them. */
+  resumable: await ledger.countResumable(),
   last_error: state.lastError,
   last_no_change_at: state.lastNoChangeAt,
-  runs: state.runs,
+  runs: await ledger.listRuns(MAX_RUNS),
   last_scan: state.lastScan && {
     at: state.lastScan.at,
     supported: state.lastScan.supported,
@@ -331,8 +413,12 @@ export const getDriveSyncStatus = () => ({
   },
 });
 
-/** With GDRIVE_AUTO_SYNC=true, syncs now and every GDRIVE_SYNC_INTERVAL_MS. Otherwise does nothing. */
+/**
+ * At startup: settles a sync a restart interrupted (its files wait for the next
+ * Sync). With GDRIVE_AUTO_SYNC=true, also syncs now and every GDRIVE_SYNC_INTERVAL_MS.
+ */
 export const startDriveSyncTimer = () => {
+  ledger.recoverInterruptedRuns().catch((err) => logger.error("[drive-sync] could not settle an interrupted sync", err));
   if (!isDriveSyncConfigured() || !AUTO_SYNC) {
     logger.info("[drive-sync] automatic sync off (sync from the admin panel, or set GDRIVE_AUTO_SYNC=true)");
     return;

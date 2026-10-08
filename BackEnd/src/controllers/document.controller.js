@@ -3,7 +3,7 @@ import * as documents from "../db/documents.js";
 import * as documentPages from "../db/documentPages.js";
 import { findLatestJobForDoc } from "../db/jobs.js";
 import { logger } from "../utils/logger.js";
-import { getDriveSyncStatus, scanDriveFolder, syncDriveFolder } from "../services/driveSync.service.js";
+import { getDriveSyncStatus, scanDriveFolder, stopDriveSync, syncDriveFolder } from "../services/driveSync.service.js";
 
 /**
  * Fast path: saves the file, hashes it, creates the document + a
@@ -68,27 +68,43 @@ const driveSyncError = (res, error) => {
 };
 
 /** GET /api/documents/sync-drive — progress of the running (or last) Drive scan/sync, polled by the admin panel. */
-export const driveSyncStatusController = (req, res) => res.status(200).json(getDriveSyncStatus());
+export const driveSyncStatusController = async (req, res) => {
+  try {
+    return res.status(200).json(await getDriveSyncStatus());
+  } catch (error) {
+    return driveSyncError(res, error);
+  }
+};
 
 /**
  * POST /api/documents/sync-drive — starts importing new or changed files from
  * the configured Google Drive folder and returns right away; they show up in
  * the document list like any upload.
  */
-export const syncDriveController = (req, res) => {
+export const syncDriveController = async (req, res) => {
   try {
     syncDriveFolder();
-    return res.status(202).json(getDriveSyncStatus());
+    return res.status(202).json(await getDriveSyncStatus());
+  } catch (error) {
+    return driveSyncError(res, error);
+  }
+};
+
+/** POST /api/documents/sync-drive/stop — stops the running sync after the file it is on. */
+export const stopDriveSyncController = async (req, res) => {
+  try {
+    await stopDriveSync();
+    return res.status(202).json(await getDriveSyncStatus());
   } catch (error) {
     return driveSyncError(res, error);
   }
 };
 
 /** POST /api/documents/sync-drive/scan — counts the folder's files and how many are not imported yet. Downloads nothing. */
-export const scanDriveController = (req, res) => {
+export const scanDriveController = async (req, res) => {
   try {
     scanDriveFolder();
-    return res.status(202).json(getDriveSyncStatus());
+    return res.status(202).json(await getDriveSyncStatus());
   } catch (error) {
     return driveSyncError(res, error);
   }

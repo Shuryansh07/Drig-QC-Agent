@@ -39,7 +39,7 @@ export function useDriveSyncStatus() {
   return useQuery({
     queryKey: queryKeys.driveSync(),
     queryFn: () => apiFetch<DriveSyncStatus>("/documents/sync-drive"),
-    refetchInterval: (query) => (query.state.data && query.state.data.phase !== "idle" ? 1500 : false),
+    refetchInterval: (query) => (query.state.data && (query.state.data.phase !== "idle" || query.state.data.pending_jobs > 0) ? 1500 : false),
     staleTime: 0,
     refetchOnWindowFocus: true,
   });

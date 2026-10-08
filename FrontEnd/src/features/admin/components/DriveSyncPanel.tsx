@@ -6,6 +6,7 @@ import {
   CloudDownload,
   LoaderCircle,
   ScanSearch,
+  Square,
   TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -15,7 +16,7 @@ import { Progress } from "@/components/ui/progress";
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { useDriveSyncStatus } from "../api/queries";
-import { useScanDrive, useSyncDrive } from "../api/mutations";
+import { useScanDrive, useStopDriveSync, useSyncDrive } from "../api/mutations";
 import type { DriveSyncRun, DriveSyncStatus } from "../types";
 import { DriveSyncFileList } from "./DriveSyncFileList";
 
@@ -50,6 +51,7 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
   const { data: status, error } = useDriveSyncStatus();
   const sync = useSyncDrive();
   const scan = useScanDrive();
+  const stop = useStopDriveSync();
 
   // When an import ends (manual or automatic): refresh the document list, which
   // has the new files now, and say how it went. A scan alone needs no toast:
@@ -65,6 +67,10 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
     });
     const run = status.runs[0];
     if (status.last_error) toast.error(status.last_error);
+    else if (run?.stopped)
+      toast.info(
+        `Drive sync stopped: ${n(run.queued)} sent, ${n(run.duplicates)} already imported, ${n(run.failed)} failed`,
+      );
     else if (run)
       toast.success(
         `Drive sync done: ${n(run.queued)} sent, ${n(run.duplicates)} already imported, ${n(run.failed)} failed`,
@@ -115,7 +121,7 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
           <p className="text-micro text-muted-foreground">
             {status.auto_sync
               ? `New files are imported automatically every ${status.interval_minutes} minutes.`
-              : "Automatic sync is off: files are imported only when you click Sync now."}
+              : "Files are imported only when you click Sync now."}
             {status.limit !== null
               ? ` Test mode: only the first ${n(status.limit)} files are synced.`
               : ""}
@@ -123,6 +129,17 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
         </div>
 
         <div className="flex shrink-0 gap-2">
+          {busy || status.pending_jobs > 0 ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={stop.isPending || status.stopping}
+              onClick={() => start(stop)}
+            >
+              <Square />
+              {stop.isPending || status.stopping ? "Stopping…" : "Stop"}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -135,10 +152,13 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
           <Button
             size="sm"
             disabled={busy || sync.isPending}
-            onClick={() => start(sync)}
+            onClick={() => {
+              stop.reset();
+              start(sync);
+            }}
           >
             <CloudDownload />
-            Sync now
+            {status.resumable > 0 ? `Resume sync (${n(status.resumable)} left)` : "Sync now"}
           </Button>
         </div>
       </div>
@@ -283,7 +303,7 @@ function DriveSyncRunItem({
           <p className="text-micro font-medium">
             {run.trigger === "auto" ? "Automatic sync" : "Manual sync"} ·{" "}
             {new Date(run.started_at).toLocaleString()}
-            {running ? " · in progress" : ""}
+            {running ? " · in progress" : run.stopped ? " · stopped" : ""}
           </p>
           <p className="text-micro text-muted-foreground">
             {n(run.processed)} of {n(run.total)} files · {n(run.queued)} sent ·{" "}
