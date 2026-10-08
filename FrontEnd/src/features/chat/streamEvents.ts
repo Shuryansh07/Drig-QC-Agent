@@ -17,16 +17,28 @@ export interface WireSource {
   section_path: string | null;
 }
 
+export interface WireImage {
+  label: string;
+  /** Presigned — expires; don't persist it past this response. */
+  url: string;
+  page: number | null;
+  document_id: string;
+}
+
 export type WireEvent =
   | { type: "stage"; stage: WireStage }
   | { type: "sources"; sources: WireSource[] }
+  /** Only sent when the answer actually had a diagram/photo attached as evidence. */
+  | { type: "images"; images: WireImage[] }
   | { type: "delta"; text: string }
   | { type: "not_covered"; notCovered: NotCoveredInfo }
   | { type: "deadline_warning"; elapsedMs: number }
-  | { type: "complete"; answer: string; durationMs: number }
+  /** verified is false when Checks 5-7 flagged a possible issue — the answer is
+   *  still the real generated text, not withheld, but the UI must caution on it. */
+  | { type: "complete"; answer: string; durationMs: number; verified: boolean }
   | { type: "error"; code: string; message: string };
 
-const TYPES = new Set(["stage", "sources", "delta", "not_covered", "deadline_warning", "complete", "error"]);
+const TYPES = new Set(["stage", "sources", "images", "delta", "not_covered", "deadline_warning", "complete", "error"]);
 
 export function parseWireEvent(frame: string): WireEvent | null {
   const parsed = parseSSEData(frame);

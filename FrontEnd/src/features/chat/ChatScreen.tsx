@@ -1,5 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useParams } from "react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAppDispatch, useAppSelector } from "@/app/hooks";
 import { chatActions } from "@/features/chat/chatSlice";
 import { uiActions } from "@/features/ui/uiSlice";
@@ -15,6 +16,9 @@ import { HandoffSheet } from "@/features/handoff/components/HandoffSheet";
 import { PageShell } from "@/components/common/PageShell";
 import { Button } from "@/components/ui/button";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { apiFetch } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-client";
+import type { Citation } from "@/types/contracts";
 
 const SUGGESTIONS = [
   "Where should the tracking unit be mounted?",
@@ -25,10 +29,15 @@ const SUGGESTIONS = [
 export default function ChatScreen() {
   const { sessionId = "" } = useParams();
   const dispatch = useAppDispatch();
+  const queryClient = useQueryClient();
   const online = useOnlineStatus();
 
   const draft = useAppSelector((s) => s.chat.draft);
   const streaming = useAppSelector((s) => s.chat.status);
+  // Only to re-run the auto-scroll effect as the answer grows — not rendered here,
+  // StreamingTurnView reads the full chat slice itself for the actual content.
+  const partialText = useAppSelector((s) => s.chat.partialText);
+  const stepCount = useAppSelector((s) => s.chat.steps.length);
 
   const { data: conversation } = useConversation(sessionId);
   const { send, cancel } = useChatStream(sessionId);
@@ -39,13 +48,51 @@ export default function ChatScreen() {
     [dispatch],
   );
 
+  // A citation backed by a diagram/photo opens straight to it in a new tab — the
+  // drawer is only for the text-only case, which has nothing else to show. The
+  // tab opens blank synchronously (inside the click) so browsers don't treat the
+  // post-fetch navigation as a blocked popup.
   const openCitation = useCallback(
-    (chunkId: string) => dispatch(uiActions.citationOpened(chunkId)),
-    [dispatch],
+    (chunkId: string) => {
+      // No noopener/noreferrer: those make window.open() return null, and the
+      // reference is required to navigate this tab once the fetch below resolves.
+      const tab = window.open("", "_blank");
+
+      void queryClient
+        .fetchQuery({
+          queryKey: queryKeys.citation(chunkId),
+          staleTime: 60 * 60 * 1000,
+          queryFn: () => apiFetch<Citation>(`/citations/${chunkId}`),
+        })
+        .then((citation) => {
+          if (citation.imageUrl && tab) {
+            tab.location.href = citation.imageUrl;
+          } else {
+            tab?.close();
+            dispatch(uiActions.citationOpened(chunkId));
+          }
+        })
+        .catch(() => {
+          tab?.close();
+          dispatch(uiActions.citationOpened(chunkId));
+        });
+    },
+    [dispatch, queryClient],
   );
 
   const turns = conversation?.turns ?? [];
   const busy = streaming === "thinking" || streaming === "streaming";
+
+  // Follows the answer down as it streams: this re-runs on the question being sent
+  // (status -> "thinking") and again on every batch of tokens/steps that arrives
+  // after that, so the newest text stays in view instead of growing off-screen below
+  // the fold. Settles on its own once streaming ends — nothing left to re-trigger it.
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (streaming === "thinking" || streaming === "streaming") {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [streaming, partialText, stepCount]);
 
   return (
     <PageShell
@@ -108,6 +155,9 @@ export default function ChatScreen() {
           onSkipClarify={() => void send("I don't know")}
           onRequestEngineer={openEngineer}
         />
+
+        {/* Zero-height: scrollIntoView'd rather than rendered, just marks "the bottom" to follow. */}
+        <div ref={bottomRef} />
       </div>
 
       <SourceDrawer />

@@ -23,7 +23,7 @@ does not become a per-developer decision.
 
 | Script | Does |
 |---|---|
-| `pnpm dev` | Vite dev server, `/api` proxied to `VITE_API_PROXY` |
+| `pnpm dev` | Vite dev server, calls the backend directly at `VITE_API_BASE_URL` |
 | `pnpm build` | Typecheck, bundle, generate the service worker |
 | `pnpm lint` | ESLint |
 | `pnpm typecheck` | `tsc -b` alone |

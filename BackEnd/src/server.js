@@ -10,9 +10,11 @@ import multer from "multer";
 import pdfRoutes from "./routes/pdf.routes.js";
 import documentRoutes from "./routes/document.routes.js";
 import ragRoutes from "./routes/rag.routes.js";
+import citationRoutes from "./routes/citations.routes.js";
 import { getQueueStats } from "./db/jobs.js";
 import { logger } from "./utils/logger.js";
 import audioRoutes from "./routes/audio.routes.js";
+import { startDriveSyncTimer } from "./services/driveSync.service.js";
 
 const app = express();
 
@@ -22,6 +24,7 @@ app.use(express.json());
 app.use("/api/pdf", pdfRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/rag", ragRoutes);
+app.use("/api/citations", citationRoutes);
 app.use("/api/audio", audioRoutes);
 
 app.get("/", (req, res) => {
@@ -63,4 +66,5 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  startDriveSyncTimer();
 });

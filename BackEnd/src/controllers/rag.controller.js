@@ -1,5 +1,13 @@
 import { retrieveRelevantChunks } from "../services/ragRetrieval.service.js";
-import { generateAnswer, streamAnswer, sourcesFromChunks, INSUFFICIENT_EVIDENCE_ANSWER } from "../services/answerGeneration.service.js";
+import {
+  generateAnswer,
+  streamAnswer,
+  sourcesFromChunks,
+  loadEvidenceImages,
+  INSUFFICIENT_EVIDENCE_ANSWER,
+} from "../services/answerGeneration.service.js";
+import { verifyAnswer } from "../services/answerVerification.service.js";
+import * as storage from "../services/storage.service.js";
 import { recordGap } from "../db/gaps.js";
 import { listLiveDocumentTitles } from "../db/documents.js";
 import { getDeadlineMs } from "../db/settings.js";
@@ -7,6 +15,22 @@ import { logger } from "../utils/logger.js";
 
 const HEARTBEAT_MS = 10_000;
 const FALLBACK_DEADLINE_MS = 22_000;
+
+/**
+ * The evidence images the answer was (or wasn't) grounded on, as time-limited
+ * URLs a browser can load directly — the only shape the technician ever sees;
+ * the base64 vision parts generation/verification used are internal to those
+ * calls and never leave the server.
+ */
+const imagesForResponse = (images) =>
+  Promise.all(
+    images.map(async (img) => ({
+      label: img.label,
+      document_id: img.docId,
+      page: img.page,
+      url: await storage.getPresignedUrl(img.s3Key),
+    }))
+  );
 
 /**
  * A refused question is not just an empty answer: it is recorded so
@@ -48,11 +72,29 @@ export const queryRag = async (req, res) => {
       return res.status(200).json({ answer: INSUFFICIENT_EVIDENCE_ANSWER, sources: [] });
     }
 
-    const { answer, sources } = await generateAnswer({ question, chunks: retrieval.chunks });
+    // Resolved once, right after retrieval — the same set grounds generation,
+    // verification, and (if the answer survives) what the technician is shown.
+    const images = await loadEvidenceImages(retrieval.chunks);
+
+    const { answer, sources } = await generateAnswer({ question, chunks: retrieval.chunks, images });
+
+    // Blueprint Checks 5-7: a written answer is not yet a safe one. Runs after
+    // generation, before the response leaves the server — nothing unverified here
+    // is ever sent, since this path has no partial state already shown to anyone.
+    // Blueprint Checks 5-7 run either way, but a failure no longer withholds the
+    // answer — it flags it. The technician decides whether to trust it, not the gate.
+    let verified = true;
+    if (answer !== INSUFFICIENT_EVIDENCE_ANSWER) {
+      const verification = await verifyAnswer({ question, answer, chunks: retrieval.chunks, images });
+      if (!verification.passed) {
+        logger.warn(`[rag query] answer unverified, returned with a caution flag: "${question}"`);
+        verified = false;
+      }
+    }
 
     logger.info(`[rag query] TOTAL request time: ${Date.now() - requestStart}ms`);
 
-    return res.status(200).json({ answer, sources });
+    return res.status(200).json({ answer, sources, images: await imagesForResponse(images), verified });
   } catch (error) {
     logger.error("RAG query error", error);
     return res.status(500).json({
@@ -70,11 +112,20 @@ export const queryRag = async (req, res) => {
  *   {type:"stage", stage:"retrieving"}                      immediately
  *   {type:"not_covered", notCovered:{...}}                  gate refused -> stream ends, no LLM call
  *   {type:"sources", sources:[{document_id, page_number}]}  as soon as retrieval finishes
+ *   {type:"images", images:[{label, url, page, document_id}]}  only when a diagram/photo
+ *                                                            was actually attached as evidence —
+ *                                                            url is a time-limited S3 link
  *   {type:"stage", stage:"generating"}
  *   {type:"delta", text}                                    repeated, as the model writes
  *   {type:"deadline_warning", elapsedMs}                    only if gate.deadline_ms passes first
- *   {type:"complete", answer, durationMs}                   the whole answer, then the stream ends
- *   {type:"error", code, message}                           anything that went wrong after headers
+ *   {type:"complete", answer, durationMs, verified}         the whole answer, then the stream ends —
+ *                                                            verified is false when Checks 5-7 flagged
+ *                                                            a possible issue; the answer is still the
+ *                                                            real text, not withheld, and the client
+ *                                                            renders a caution banner under it
+ *   {type:"error", code, message}                           anything that went wrong after headers —
+ *                                                            a dropped upstream call or a stream failure,
+ *                                                            never a verification outcome (see "complete")
  *
  * The first byte goes out before retrieval starts, so a slow embedding or
  * database call shows up as "searching…" on the client instead of a blank wait.
@@ -134,11 +185,18 @@ export const streamRagQuery = async (req, res) => {
 
     logger.info(`[rag stream] ${retrieval.chunks.length} chunk(s) admitted (${retrieval.admission.reason}) after ${Date.now() - requestStart}ms`);
     send({ type: "sources", sources: sourcesFromChunks(retrieval.chunks) });
+
+    // Resolved once, right after retrieval — the same set grounds generation,
+    // verification, and (if the answer survives) what the technician is shown.
+    const images = await loadEvidenceImages(retrieval.chunks);
+    if (closed) return;
+    if (images.length > 0) send({ type: "images", images: await imagesForResponse(images) });
+
     send({ type: "stage", stage: "generating" });
 
     let answer = "";
     let firstTokenLogged = false;
-    for await (const delta of streamAnswer({ question, chunks: retrieval.chunks, signal: abort.signal })) {
+    for await (const delta of streamAnswer({ question, chunks: retrieval.chunks, images, signal: abort.signal })) {
       if (!firstTokenLogged) {
         firstTokenLogged = true;
         logger.info(`[rag stream] first token after ${Date.now() - requestStart}ms`);
@@ -146,8 +204,26 @@ export const streamRagQuery = async (req, res) => {
       answer += delta;
       send({ type: "delta", text: delta });
     }
+    if (closed) return;
 
-    send({ type: "complete", answer: answer.trim() || INSUFFICIENT_EVIDENCE_ANSWER, durationMs: Date.now() - requestStart });
+    const finalAnswer = answer.trim() || INSUFFICIENT_EVIDENCE_ANSWER;
+
+    // Blueprint Checks 5-7, run on the complete text. The technician has already
+    // watched this stream in live, so a failure here no longer RETRACTS it — it
+    // flags it. Vanishing text someone already read is its own kind of untrustworthy;
+    // the client shows the same answer with a caution banner instead.
+    // A bare refusal has nothing to check, and skips straight to "complete".
+    let verified = true;
+    if (finalAnswer !== INSUFFICIENT_EVIDENCE_ANSWER) {
+      const verification = await verifyAnswer({ question, answer: finalAnswer, chunks: retrieval.chunks, images });
+      if (closed) return;
+      if (!verification.passed) {
+        logger.warn(`[rag stream] answer unverified, shown with a caution banner: "${question}"`);
+        verified = false;
+      }
+    }
+
+    send({ type: "complete", answer: finalAnswer, durationMs: Date.now() - requestStart, verified });
     logger.info(`[rag stream] TOTAL request time: ${Date.now() - requestStart}ms`);
   } catch (error) {
     if (closed) return; // the client left; nothing to tell them

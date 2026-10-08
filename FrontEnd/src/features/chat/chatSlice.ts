@@ -10,6 +10,7 @@ const emptyStream = {
   steps: [],
   partialText: "",
   citations: [],
+  images: [],
   gateOutcome: null,
   clarify: null,
   notCovered: null,
@@ -93,6 +94,10 @@ const chatSlice = createSlice({
           if (!state.citations.some((c) => c.chunkId === event.citation.chunkId)) {
             state.citations.push(event.citation);
           }
+          break;
+
+        case "images":
+          state.images = event.images;
           break;
 
         case "not_covered":

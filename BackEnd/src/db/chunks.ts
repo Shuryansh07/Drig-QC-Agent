@@ -168,6 +168,72 @@ export interface ChunkText {
  * fetch, not a similarity query, so it's a separate, ordinary lookup). The
  * parent is joined here: the child was only the match (DATABASE.md §6.1).
  */
+export interface ChunkLocation {
+  docId: string;
+  documentTitle: string;
+  pageFrom: number | null;
+  sectionPath: string | null;
+  /** Fullest readable text at this spot: the live parent section if there is one, else every live child's own text, joined. */
+  content: string;
+}
+
+/**
+ * The citation chips the chat shows don't carry a real chunk_id — `sourcesFromChunks()`
+ * already collapsed possibly-several matching children down to one entry per distinct
+ * (document, page-or-section), which is a location, not a row. This resolves a click
+ * back to the fullest real text at that same location: the live parent section (full
+ * context, same as what the answer model itself reads) when one exists, otherwise every
+ * live child there, concatenated in document order, which only happens on a page/section
+ * with no heading of its own (so nothing was ever grouped under a parent).
+ */
+export const findChunkAtLocation = async ({
+  docId,
+  page,
+  sectionPath,
+}: {
+  docId: string;
+  page: number | null;
+  sectionPath: string | null;
+}): Promise<ChunkLocation | null> => {
+  const { rows: docRows } = await pool.query<{ title: string }>(`select title from kb_document where doc_id = $1`, [docId]);
+  if (docRows.length === 0) return null;
+
+  // A Word document's citation key only carries the LAST segment of section_path
+  // (the same derivation the frontend uses, toCitations()'s `.split(" > ").pop()`),
+  // not the full heading chain — so this matches on that tail, not full equality.
+  // reverse()+split_part()+reverse() is Postgres's usual trick for "substring after
+  // the last delimiter"; a path with no '>' at all round-trips through it unchanged.
+  const locationFilter =
+    page !== null ? `c.page_from = $2` : `trim(reverse(split_part(reverse(c.section_path), '>', 1))) = $2`;
+  const locationValue = page !== null ? page : sectionPath;
+
+  const { rows: parentRows } = await pool.query<{ text: string; section_path: string | null; page_from: number | null }>(
+    `select text, section_path, page_from from kb_chunk c
+      where c.doc_id = $1 and ${locationFilter} and c.is_parent and c.is_live and c.deleted_at is null
+      order by c.chunk_index limit 1`,
+    [docId, locationValue]
+  );
+  if (parentRows.length > 0) {
+    return { docId, documentTitle: docRows[0].title, pageFrom: parentRows[0].page_from, sectionPath: parentRows[0].section_path, content: parentRows[0].text };
+  }
+
+  const { rows: childRows } = await pool.query<{ text: string; section_path: string | null; page_from: number | null }>(
+    `select text, section_path, page_from from kb_chunk c
+      where c.doc_id = $1 and ${locationFilter} and not c.is_parent and c.is_live and c.deleted_at is null
+      order by c.chunk_index`,
+    [docId, locationValue]
+  );
+  if (childRows.length === 0) return null;
+
+  return {
+    docId,
+    documentTitle: docRows[0].title,
+    pageFrom: childRows[0].page_from,
+    sectionPath: childRows[0].section_path,
+    content: childRows.map((r) => r.text).join("\n\n"),
+  };
+};
+
 export const getChunksByIds = async (chunkIds: string[]): Promise<ChunkText[]> => {
   if (chunkIds.length === 0) return [];
   const { rows } = await pool.query(
