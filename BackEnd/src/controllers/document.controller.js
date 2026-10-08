@@ -3,7 +3,8 @@ import * as documents from "../db/documents.js";
 import * as documentPages from "../db/documentPages.js";
 import { findLatestJobForDoc } from "../db/jobs.js";
 import { logger } from "../utils/logger.js";
-import { getDriveSyncStatus, scanDriveFolder, syncDriveFolder } from "../services/driveSync.service.js";
+import { getDriveSyncStatus, scanDriveFolder, syncDriveFolder, stopDriveSync, JOB_SOURCE } from "../services/driveSync.service.js";
+import { countActiveJobsBySource } from "../db/jobs.js";
 
 /**
  * Fast path: saves the file, hashes it, creates the document + a
@@ -67,8 +68,35 @@ const driveSyncError = (res, error) => {
   return res.status(error.status || 500).json({ success: false, message: error.message || "Google Drive sync failed" });
 };
 
+/** The status plus how many jobs the worker still has from this sync: Stop matters while that is above zero, even when the sync itself is idle. */
+const driveSyncStatusWithJobs = async () => ({
+  ...getDriveSyncStatus(),
+  queued_jobs: await countActiveJobsBySource(JOB_SOURCE),
+});
+
 /** GET /api/documents/sync-drive — progress of the running (or last) Drive scan/sync, polled by the admin panel. */
-export const driveSyncStatusController = (req, res) => res.status(200).json(getDriveSyncStatus());
+export const driveSyncStatusController = async (req, res) => {
+  try {
+    return res.status(200).json(await driveSyncStatusWithJobs());
+  } catch (error) {
+    return driveSyncError(res, error);
+  }
+};
+
+/**
+ * POST /api/documents/sync-drive/stop — stops ingestion completely: aborts the
+ * running scan/download and cancels every job the sync already handed to the
+ * worker (pending ones never run, running ones stop at their next checkpoint).
+ * Their half-built documents are discarded, so a later sync starts them afresh.
+ */
+export const stopDriveSyncController = async (req, res) => {
+  try {
+    await stopDriveSync();
+    return res.status(202).json(await driveSyncStatusWithJobs());
+  } catch (error) {
+    return driveSyncError(res, error);
+  }
+};
 
 /**
  * POST /api/documents/sync-drive — starts importing new or changed files from

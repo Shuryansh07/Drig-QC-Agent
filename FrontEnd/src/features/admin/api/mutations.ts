@@ -40,6 +40,8 @@ function useDriveSyncAction(path: string, label: string) {
 
 export const useSyncDrive = () => useDriveSyncAction("/documents/sync-drive", "sync");
 export const useScanDrive = () => useDriveSyncAction("/documents/sync-drive/scan", "scan");
+/** POST /api/documents/sync-drive/stop: stops the sync and cancels every job it already queued for the worker. */
+export const useStopDriveSync = () => useDriveSyncAction("/documents/sync-drive/stop", "stop");
 
 /** POST /api/documents/:id/retry. The worker skips vectors it already computed. */
 export function useRetryDocument() {

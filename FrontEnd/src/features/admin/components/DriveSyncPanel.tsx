@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CloudDownload,
   LoaderCircle,
+  OctagonX,
   ScanSearch,
   TriangleAlert,
 } from "lucide-react";
@@ -15,7 +16,7 @@ import { Progress } from "@/components/ui/progress";
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { useDriveSyncStatus } from "../api/queries";
-import { useScanDrive, useSyncDrive } from "../api/mutations";
+import { useScanDrive, useStopDriveSync, useSyncDrive } from "../api/mutations";
 import type { DriveSyncRun, DriveSyncStatus } from "../types";
 import { DriveSyncFileList } from "./DriveSyncFileList";
 
@@ -23,6 +24,7 @@ const PHASE: Record<DriveSyncStatus["phase"], string> = {
   idle: "Idle",
   scanning: "Checking folder…",
   importing: "Importing…",
+  stopping: "Stopping…",
 };
 
 const errorMessage = (err: unknown): string =>
@@ -50,6 +52,7 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
   const { data: status, error } = useDriveSyncStatus();
   const sync = useSyncDrive();
   const scan = useScanDrive();
+  const stop = useStopDriveSync();
 
   // When an import ends (manual or automatic): refresh the document list, which
   // has the new files now, and say how it went. A scan alone needs no toast:
@@ -89,10 +92,30 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
   }
 
   const busy = status.phase !== "idle";
+  // Stop also matters when the sync itself is done but the worker is still processing what it queued.
+  const queuedJobs = status.queued_jobs ?? 0;
+  const canStop = status.phase !== "stopping" && (busy || queuedJobs > 0);
   const start = (action: typeof sync) =>
     action.mutate(undefined, {
       onError: (err) => toast.error(errorMessage(err)),
     });
+  const stopAll = () => {
+    if (
+      !window.confirm(
+        "Stop ingestion? The running sync is cancelled and every file already sent for processing is dropped (partly processed documents are removed). A later sync imports them again from scratch.",
+      )
+    )
+      return;
+    stop.mutate(undefined, {
+      onSuccess: () => {
+        toast.success("Stopping ingestion…");
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.adminDocuments(),
+        });
+      },
+      onError: (err) => toast.error(errorMessage(err)),
+    });
+  };
   const lastScan = status.last_scan;
 
   return (
@@ -113,16 +136,24 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
             </Badge>
           </div>
           <p className="text-micro text-muted-foreground">
-            {status.auto_sync
-              ? `New files are imported automatically every ${status.interval_minutes} minutes.`
-              : "Automatic sync is off: files are imported only when you click Sync now."}
-            {status.limit !== null
-              ? ` Test mode: only the first ${n(status.limit)} files are synced.`
-              : ""}
+            Files are imported only when you click Sync now, and Stop cancels
+            everything still queued.
           </p>
         </div>
 
         <div className="flex shrink-0 gap-2">
+          {canStop ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={stop.isPending}
+              onClick={stopAll}
+            >
+              <OctagonX />
+              Stop
+              {queuedJobs > 0 ? ` (${n(queuedJobs)} queued)` : ""}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -151,6 +182,13 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
         <p className="text-micro text-muted-foreground">
           Last sync {new Date(status.last_no_change_at).toLocaleString()}: no
           new or changed files.
+        </p>
+      ) : null}
+
+      {status.last_stop && status.phase === "idle" ? (
+        <p className="text-micro text-muted-foreground">
+          Stopped {new Date(status.last_stop.at).toLocaleString()}:{" "}
+          {n(status.last_stop.cancelled_jobs)} queued file(s) cancelled.
         </p>
       ) : null}
 
@@ -281,7 +319,7 @@ function DriveSyncRunItem({
         />
         <div className="min-w-0 flex-1">
           <p className="text-micro font-medium">
-            {run.trigger === "auto" ? "Automatic sync" : "Manual sync"} ·{" "}
+            Sync ·{" "}
             {new Date(run.started_at).toLocaleString()}
             {running ? " · in progress" : ""}
           </p>
@@ -291,6 +329,7 @@ function DriveSyncRunItem({
             <span className={run.failed > 0 ? "text-destructive" : undefined}>
               {n(run.failed)} failed
             </span>
+            {run.cancelled ? ` · ${n(run.cancelled)} stopped` : ""}
             {running && run.current ? ` · now: ${run.current}` : ""}
           </p>
         </div>

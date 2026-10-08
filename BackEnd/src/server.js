@@ -14,7 +14,6 @@ import citationRoutes from "./routes/citations.routes.js";
 import { getQueueStats } from "./db/jobs.js";
 import { logger } from "./utils/logger.js";
 import audioRoutes from "./routes/audio.routes.js";
-import { startDriveSyncTimer } from "./services/driveSync.service.js";
 
 const app = express();
 
@@ -66,5 +65,4 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  startDriveSyncTimer();
 });

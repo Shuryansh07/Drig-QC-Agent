@@ -39,7 +39,11 @@ export function useDriveSyncStatus() {
   return useQuery({
     queryKey: queryKeys.driveSync(),
     queryFn: () => apiFetch<DriveSyncStatus>("/documents/sync-drive"),
-    refetchInterval: (query) => (query.state.data && query.state.data.phase !== "idle" ? 1500 : false),
+    // Also while the worker still has jobs from the sync, so the Stop button appears and disappears on time.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return data && (data.phase !== "idle" || (data.queued_jobs ?? 0) > 0) ? 1500 : false;
+    },
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
