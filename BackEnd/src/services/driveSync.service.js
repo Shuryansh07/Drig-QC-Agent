@@ -4,8 +4,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { TEMP_UPLOAD_DIR } from "../middleware/upload.middleware.js";
-import { enqueueIngestion, discardDocument } from "./ragIngestion.service.js";
-import * as jobs from "../db/jobs.js";
+import { enqueueIngestion } from "./ragIngestion.service.js";
 import { kindOfFileName, extensionOfKind, isImageKind } from "./chunking/documentTypes.js";
 import { listUploadTitles } from "../db/documents.js";
 import { logger } from "../utils/logger.js";
@@ -22,14 +21,12 @@ const FOLDER_ID = process.env.GDRIVE_FOLDER_ID;
 const FOLDER_RESOURCE_KEY = process.env.GDRIVE_RESOURCE_KEY;
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const GOOGLE_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-// Tags every job this sync queues (ingestion_job.payload.source), so Stop can find
-// them in the database even after a restart, and never touches a manual upload.
-export const JOB_SOURCE = "drive-sync";
-
-// Stop: aborts the running scan/download, and the loop in ingestFiles() checks the flag between files.
-let controller = null;
-let cancelRequested = false;
+// For trying the pipeline on a few files first: only the first N files of the
+// folder (in listFiles' order) are ever synced. Unset or 0 = no limit.
+const SYNC_LIMIT = parseInt(process.env.GDRIVE_SYNC_LIMIT || "0", 10) || Infinity;
+// Off unless explicitly "true": a sync only starts from the admin panel's button.
+const AUTO_SYNC = process.env.GDRIVE_AUTO_SYNC === "true";
+const INTERVAL_MS = parseInt(process.env.GDRIVE_SYNC_INTERVAL_MS || "600000", 10);
 
 // Google-native files have no bytes of their own; Drive exports them. PDF is
 // the export to use: Drive renders identical bytes for an unchanged file, so
@@ -60,10 +57,9 @@ let nextRunId = 1;
 const state = {
   phase: "idle",
   lastError: null,
-  lastStop: null, // { at, cancelled_jobs, discarded } of the last Stop
   lastScan: null,
   lastNoChangeAt: null,
-  // Each: { id, started_at, finished_at, found,
+  // Each: { id, trigger: "auto" | "manual", started_at, finished_at, found,
   // total, processed, queued, duplicates, failed, current, error, files }.
   // `files`, in import order: { name, folder, type, status, document_id,
   // message }, `status` being "waiting" | "downloading" | "queued" |
@@ -75,7 +71,7 @@ const state = {
 const driveFetch = async (url, resourceKeys = []) => {
   const pairs = resourceKeys.filter(([, key]) => key).map(([id, key]) => `${id}/${key}`);
   const headers = pairs.length ? { "X-Goog-Drive-Resource-Keys": pairs.join(",") } : {};
-  const response = await fetch(url, { headers, signal: controller?.signal });
+  const response = await fetch(url, { headers });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     const reason = data.error?.message || response.statusText;
@@ -203,21 +199,15 @@ const downloadAndEnqueue = async (file) => {
   const url = file.exportPdf
     ? `${API_BASE}/files/${file.id}/export?${new URLSearchParams({ mimeType: "application/pdf", key: API_KEY })}`
     : `${API_BASE}/files/${file.id}?${new URLSearchParams({ alt: "media", supportsAllDrives: "true", key: API_KEY })}`;
-  try {
-    const response = await driveFetch(url, [[file.id, file.resourceKey]]);
-    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(filePath), { signal: controller?.signal });
-  } catch (err) {
-    await fs.promises.unlink(filePath).catch(() => {}); // a half-written download must not linger
-    throw err;
-  }
-  return enqueueIngestion({ filePath, fileName: file.fileName, source: JOB_SOURCE });
+  const response = await driveFetch(url, [[file.id, file.resourceKey]]);
+  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(filePath));
+  return enqueueIngestion({ filePath, fileName: file.fileName });
 };
 
 const ingestFiles = async (run, files) => {
   // One at a time, like the admin panel's uploads: the worker queues the heavy work anyway.
   for (const [index, file] of files.entries()) {
     const entry = run.files[index];
-    if (cancelRequested) break;
     run.current = file.fileName;
     entry.status = "downloading";
     try {
@@ -225,12 +215,10 @@ const ingestFiles = async (run, files) => {
       seen.set(file.id, file.modifiedTime);
       entry.status = result.duplicate ? "duplicate" : "queued";
       entry.document_id = result.documentId;
-      entry.file_id = file.id;
       if (result.duplicate) run.duplicates++;
       else run.queued++;
       logger.info(`[drive-sync] "${file.fileName}" -> ${result.duplicate ? "duplicate" : `queued as ${result.documentId}`}`);
     } catch (err) {
-      if (cancelRequested) break; // aborted by Stop: not a failure, cancelDriveJobs() marks it
       // Left out of `seen`, so the next sync tries it again.
       run.failed++;
       entry.status = "failed";
@@ -240,37 +228,6 @@ const ingestFiles = async (run, files) => {
     run.processed++;
   }
   run.current = null;
-};
-
-/**
- * Cancels every job this sync has queued: pending ones are never claimed (their
- * documents are discarded here), running ones are stopped by their worker at its
- * next checkpoint, which discards the document too. Files are forgotten so a
- * later sync imports them again from scratch.
- */
-const cancelDriveJobs = async () => {
-  const cancelled = await jobs.cancelJobsBySource(JOB_SOURCE);
-  const byDoc = new Map(cancelled.map((j) => [j.docId, j]));
-
-  for (const run of state.runs) {
-    for (const entry of run.files) {
-      const unfinished = entry.status === "waiting" || entry.status === "downloading";
-      if (!unfinished && !(entry.document_id && byDoc.has(entry.document_id))) continue;
-      entry.status = "cancelled";
-      entry.message = "Stopped by operator";
-      run.cancelled = (run.cancelled ?? 0) + 1;
-      if (entry.file_id) seen.delete(entry.file_id);
-    }
-  }
-
-  let discarded = 0;
-  for (const job of cancelled) {
-    if (job.wasRunning || !job.docId) continue;
-    await discardDocument(job.docId);
-    discarded++;
-  }
-  state.lastStop = { at: new Date().toISOString(), cancelled_jobs: cancelled.length, discarded };
-  logger.warn(`[drive-sync] stopped: ${cancelled.length} job(s) cancelled (${discarded} documents discarded now, ${cancelled.length - discarded} by their worker)`);
 };
 
 /**
@@ -286,24 +243,13 @@ const begin = (phase, work) => {
   }
   state.phase = phase;
   state.lastError = null;
-  cancelRequested = false;
-  controller = new AbortController();
 
   work()
     .catch((err) => {
-      if (cancelRequested) return; // the abort Stop caused, not a failure
       state.lastError = err.message;
       logger.error(`[drive-sync] ${phase} failed`, err);
     })
-    .then(async () => {
-      if (!cancelRequested) return;
-      await cancelDriveJobs().catch((err) => {
-        state.lastError = `Stopped, but cancelling the queued jobs failed: ${err.message}`;
-        logger.error("[drive-sync] cancelling queued jobs failed", err);
-      });
-    })
     .finally(() => {
-      controller = null;
       state.phase = "idle";
     });
 };
@@ -317,22 +263,23 @@ export const scanDriveFolder = () =>
 
 /**
  * Lists the folder, then downloads and enqueues the new or changed files (up
- * the whole folder), one at a time. Only ever started by the admin panel's Sync
- * button; there is no timer.
+ * to GDRIVE_SYNC_LIMIT), one at a time. `trigger` ("auto" | "manual") is shown
+ * in the admin panel's sync history.
  */
-export const syncDriveFolder = () =>
+export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
   begin("scanning", async () => {
-    const files = await scan();
+    const files = (await scan()).slice(0, SYNC_LIMIT);
     const pending = files.filter((f) => seen.get(f.id) !== f.modifiedTime);
     if (pending.length === 0) {
       state.lastNoChangeAt = new Date().toISOString();
-      logger.info("[drive-sync] sync: no new or changed files");
+      logger.info(`[drive-sync] ${trigger} sync: no new or changed files`);
       return;
     }
-    logger.info(`[drive-sync] sync: importing ${pending.length} new or changed file(s) of ${files.length}`);
+    logger.info(`[drive-sync] ${trigger} sync: importing ${pending.length} new or changed file(s) of ${files.length}`);
 
     const run = {
       id: nextRunId++,
+      trigger,
       started_at: new Date().toISOString(),
       finished_at: null,
       found: files.length,
@@ -356,7 +303,7 @@ export const syncDriveFolder = () =>
     state.phase = "importing";
     try {
       await ingestFiles(run, pending);
-      if (!cancelRequested) await scan(); // refresh the "not imported yet" counts
+      await scan(); // refresh the "not imported yet" counts
     } catch (err) {
       run.error = err.message;
       throw err;
@@ -365,38 +312,13 @@ export const syncDriveFolder = () =>
     }
   });
 
-/**
- * Stops ingestion completely: aborts a running scan or download, and cancels the
- * jobs this sync already handed to the worker (see cancelDriveJobs). Safe to call
- * when nothing is syncing: the worker may still be working through queued jobs.
- */
-export const stopDriveSync = async () => {
-  if (!isDriveSyncConfigured()) {
-    throw Object.assign(new Error("Google Drive sync is not configured (GOOGLE_API_KEY / GDRIVE_FOLDER_ID)"), { status: 503 });
-  }
-  if (state.phase === "stopping") return;
-
-  if (state.phase === "idle") {
-    state.phase = "stopping";
-    try {
-      await cancelDriveJobs();
-    } finally {
-      state.phase = "idle";
-    }
-    return;
-  }
-
-  // A scan or sync is running: it notices the flag, winds down, then cancels the jobs itself (see begin()).
-  cancelRequested = true;
-  state.phase = "stopping";
-  controller?.abort();
-};
-
 export const getDriveSyncStatus = () => ({
   configured: isDriveSyncConfigured(),
+  auto_sync: AUTO_SYNC,
+  interval_minutes: Math.round(INTERVAL_MS / 60000),
+  limit: Number.isFinite(SYNC_LIMIT) ? SYNC_LIMIT : null,
   phase: state.phase,
   last_error: state.lastError,
-  last_stop: state.lastStop,
   last_no_change_at: state.lastNoChangeAt,
   runs: state.runs,
   last_scan: state.lastScan && {
@@ -408,3 +330,21 @@ export const getDriveSyncStatus = () => ({
     skipped: state.lastScan.skipped,
   },
 });
+
+/** With GDRIVE_AUTO_SYNC=true, syncs now and every GDRIVE_SYNC_INTERVAL_MS. Otherwise does nothing. */
+export const startDriveSyncTimer = () => {
+  if (!isDriveSyncConfigured() || !AUTO_SYNC) {
+    logger.info("[drive-sync] automatic sync off (sync from the admin panel, or set GDRIVE_AUTO_SYNC=true)");
+    return;
+  }
+  const tick = () => {
+    try {
+      syncDriveFolder({ trigger: "auto" });
+    } catch (err) {
+      if (err.status !== 409) logger.error("[drive-sync] scheduled sync failed", err);
+    }
+  };
+  tick();
+  setInterval(tick, INTERVAL_MS);
+  logger.info(`[drive-sync] automatic sync every ${Math.round(INTERVAL_MS / 1000)}s`);
+};

@@ -59,7 +59,7 @@ export interface DriveTypeCount {
   remaining: number;
 }
 
-export type DriveSyncFileStatus = "waiting" | "downloading" | "queued" | "duplicate" | "failed" | "cancelled";
+export type DriveSyncFileStatus = "waiting" | "downloading" | "queued" | "duplicate" | "failed";
 
 export interface DriveSyncFile {
   name: string;
@@ -75,6 +75,7 @@ export interface DriveSyncFile {
 /** One sync that found new or changed files. */
 export interface DriveSyncRun {
   id: number;
+  trigger: "auto" | "manual";
   started_at: string;
   /** null while it is still importing. */
   finished_at: string | null;
@@ -86,8 +87,6 @@ export interface DriveSyncRun {
   queued: number;
   duplicates: number;
   failed: number;
-  /** Files stopped by the operator. */
-  cancelled?: number;
   current: string | null;
   error: string | null;
   files: DriveSyncFile[];
@@ -96,11 +95,11 @@ export interface DriveSyncRun {
 /** GET /api/documents/sync-drive — also what the sync and scan POSTs return. */
 export interface DriveSyncStatus {
   configured: boolean;
-  /** "stopping": Stop was clicked and the sync is winding down. */
-  phase: "idle" | "scanning" | "importing" | "stopping";
-  /** Jobs this sync handed to the worker that have not finished. Stop is useful while this is above 0. Only in GET and Stop responses. */
-  queued_jobs?: number;
-  last_stop: { at: string; cancelled_jobs: number; discarded: number } | null;
+  auto_sync: boolean;
+  interval_minutes: number;
+  /** GDRIVE_SYNC_LIMIT: only the first N files are synced. null = whole folder. */
+  limit: number | null;
+  phase: "idle" | "scanning" | "importing";
   last_error: string | null;
   /** When a sync last ran and found nothing new (such syncs are not kept in `runs`). */
   last_no_change_at: string | null;

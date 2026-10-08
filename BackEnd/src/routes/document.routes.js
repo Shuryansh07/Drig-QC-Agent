@@ -9,7 +9,6 @@ import {
   syncDriveController,
   scanDriveController,
   driveSyncStatusController,
-  stopDriveSyncController,
 } from "../controllers/document.controller.js";
 
 const router = express.Router();
@@ -19,7 +18,6 @@ router.post("/upload", upload.single("file"), uploadDocument);
 router.get("/sync-drive", driveSyncStatusController);
 router.post("/sync-drive", syncDriveController);
 router.post("/sync-drive/scan", scanDriveController);
-router.post("/sync-drive/stop", stopDriveSyncController);
 router.post("/:id/retry", retryDocumentController);
 router.get("/:id/status", getDocumentStatus);
 router.delete("/:id", deleteDocumentController);

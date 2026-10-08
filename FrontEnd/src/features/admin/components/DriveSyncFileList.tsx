@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   CircleCheck,
   CircleDashed,
-  CircleOff,
   Copy,
   LoaderCircle,
   TriangleAlert,
@@ -40,11 +39,6 @@ const STATUS: Record<
     icon: TriangleAlert,
     className: "text-destructive",
   },
-  cancelled: {
-    label: "Stopped",
-    icon: CircleOff,
-    className: "text-muted-foreground",
-  },
 };
 
 type Filter = "all" | DriveSyncFileStatus;
@@ -54,7 +48,6 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: "duplicate", label: "Already imported" },
   { value: "failed", label: "Failed" },
   { value: "waiting", label: "Waiting" },
-  { value: "cancelled", label: "Stopped" },
 ];
 
 interface DriveSyncFileListProps {
