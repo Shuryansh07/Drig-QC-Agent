@@ -12,7 +12,7 @@ export interface IngestionJob {
   docId: string | null;
   pageNumber: number | null;
   payload: unknown;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   attempts: number;
   maxAttempts: number;
   runAt: Date;
@@ -79,8 +79,62 @@ export const claimNextJob = async (workerId: string): Promise<IngestionJob | nul
   return rows[0] ? mapRow(rows[0]) : null;
 };
 
+// Guarded on 'running' so a job cancelled while it ran stays cancelled.
 export const completeJob = async (jobId: string): Promise<void> => {
-  await pool.query(`update ingestion_job set status = 'completed', last_error = null, updated_at = now() where id = $1`, [jobId]);
+  await pool.query(
+    `update ingestion_job set status = 'completed', last_error = null, updated_at = now() where id = $1 and status = 'running'`,
+    [jobId]
+  );
+};
+
+/** Thrown inside a running job when an operator cancelled it; the worker discards the document instead of retrying. */
+export class JobCancelledError extends Error {
+  constructor(jobId: string) {
+    super(`Job ${jobId} was cancelled`);
+    this.name = "JobCancelledError";
+  }
+}
+
+export const isJobCancelled = async (jobId: string): Promise<boolean> => {
+  const { rows } = await pool.query(`select status from ingestion_job where id = $1`, [jobId]);
+  return rows[0]?.status === "cancelled";
+};
+
+export interface CancelledJob {
+  docId: string | null;
+  /** True when a worker had already claimed it: that worker stops at its next checkpoint and discards the document. */
+  wasRunning: boolean;
+}
+
+/**
+ * Cancels every pending or running job that was queued by `source` (e.g.
+ * "drive-sync"). One statement, so it cannot race a worker's claim: a job is
+ * either cancelled before it is claimed (never runs) or seen as running.
+ */
+export const cancelJobsBySource = async (source: string): Promise<CancelledJob[]> => {
+  const { rows } = await pool.query(
+    `with target as (
+       select id, doc_id, status as prev
+         from ingestion_job
+        where status in ('pending','running') and payload->>'source' = $1
+          for update
+     )
+     update ingestion_job j
+        set status = 'cancelled', last_error = 'Cancelled by operator', updated_at = now()
+       from target t
+      where j.id = t.id
+      returning t.doc_id, t.prev`,
+    [source]
+  );
+  return rows.map((r: any) => ({ docId: r.doc_id, wasRunning: r.prev === "running" }));
+};
+
+export const countActiveJobsBySource = async (source: string): Promise<number> => {
+  const { rows } = await pool.query(
+    `select count(*)::int as n from ingestion_job where status in ('pending','running') and payload->>'source' = $1`,
+    [source]
+  );
+  return rows[0].n;
 };
 
 export const failJob = async (
@@ -92,7 +146,10 @@ export const failJob = async (
   const exhausted = job.attempts >= job.maxAttempts;
 
   if (!retryable || exhausted) {
-    await pool.query(`update ingestion_job set status = 'failed', last_error = $2, updated_at = now() where id = $1`, [job.id, message]);
+    await pool.query(
+      `update ingestion_job set status = 'failed', last_error = $2, updated_at = now() where id = $1 and status <> 'cancelled'`,
+      [job.id, message]
+    );
     return;
   }
 
@@ -103,7 +160,7 @@ export const failJob = async (
   await pool.query(
     `update ingestion_job
         set status = 'pending', last_error = $2, run_at = $3, locked_at = null, locked_by = null, updated_at = now()
-      where id = $1`,
+      where id = $1 and status <> 'cancelled'`,
     [job.id, message, runAt]
   );
 };
@@ -142,7 +199,7 @@ export const getQueueStats = async (): Promise<Record<string, number>> => {
   const { rows } = await pool.query<{ status: string; count: string }>(
     `select status, count(*)::text as count from ingestion_job group by status`
   );
-  const stats: Record<string, number> = { pending: 0, running: 0, completed: 0, failed: 0 };
+  const stats: Record<string, number> = { pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const row of rows) stats[row.status] = parseInt(row.count, 10);
   return stats;
 };

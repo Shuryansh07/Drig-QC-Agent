@@ -7,9 +7,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "./utils/logger.js";
-import { claimNextJob, completeJob, failJob, recoverStaleJobs } from "./db/jobs.js";
+import { claimNextJob, completeJob, failJob, recoverStaleJobs, isJobCancelled, JobCancelledError } from "./db/jobs.js";
 import * as documents from "./db/documents.js";
-import { processDocument } from "./services/ragIngestion.service.js";
+import { processDocument, discardDocument } from "./services/ragIngestion.service.js";
 import { TEMP_UPLOAD_DIR } from "./middleware/upload.middleware.js";
 import { pool } from "./db/pool.js";
 import * as storage from "./services/storage.service.js";
@@ -53,14 +53,25 @@ const runJob = async (job) => {
     }
 
     logger.info(`[job ${job.id}] document processing started (file: ${document.title})`);
-    const result = await processDocument(document);
+    const result = await processDocument(document, { jobId: job.id });
 
+    // Cancelled while its last step ran: nothing should stay from it.
+    if (await isJobCancelled(job.id)) {
+      logger.warn(`[job ${job.id}] cancelled by an operator -> discarding document ${job.docId}`);
+      await discardDocument(job.docId);
+      return;
+    }
     await completeJob(job.id);
     logger.info(
       `[job ${job.id}] completed in ${Date.now() - start}ms (document status: ${result.status}, ` +
         `${result.pagesProcessed}/${result.totalPages} pages, ${result.chunksCreated} chunks)`
     );
   } catch (err) {
+    if (err instanceof JobCancelledError) {
+      logger.warn(`[job ${job.id}] stopped after ${Date.now() - start}ms (cancelled by an operator) -> discarding document ${job.docId}`);
+      if (job.docId) await discardDocument(job.docId);
+      return;
+    }
     logger.error(`[job ${job.id}] failed after ${Date.now() - start}ms`, err);
 
     const retryable = isRetryableError(err);

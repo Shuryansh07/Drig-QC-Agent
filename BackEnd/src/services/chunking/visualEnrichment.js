@@ -101,7 +101,7 @@ const insertAfterPage = (blocks, page, block) => {
   blocks.splice(index + 1, 0, block);
 };
 
-const enrichPdf = async ({ buffer, extraction, fileName, cache, params, log, save }) => {
+const enrichPdf = async ({ buffer, extraction, fileName, cache, params, log, save, checkpoint }) => {
   const { pages } = extraction;
   const blocks = [...extraction.blocks];
 
@@ -145,6 +145,7 @@ const enrichPdf = async ({ buffer, extraction, fileName, cache, params, log, sav
       let fresh = false;
 
       if (!result) {
+        await checkpoint?.(); // throws if the job was cancelled: no more paid vision calls
         try {
           const contextText = blocks.filter((b) => b.page === page && b.type !== "figure").map(blockText).join(" ");
           result = await describeVisual({
@@ -189,7 +190,7 @@ const enrichPdf = async ({ buffer, extraction, fileName, cache, params, log, sav
 
 // ---- Word --------------------------------------------------------------------
 
-const enrichDocx = async ({ extraction, fileName, cache, params, log, save }) => {
+const enrichDocx = async ({ extraction, fileName, cache, params, log, save, checkpoint }) => {
   const { images } = extraction;
   const placeholders = extraction.blocks.filter((b) => b.type === "figure");
   const chosen = new Set(placeholders.slice(0, params.maxVisualsPerDocument));
@@ -210,6 +211,7 @@ const enrichDocx = async ({ extraction, fileName, cache, params, log, save }) =>
       let fresh = false;
 
       if (!result) {
+        await checkpoint?.();
         try {
           const at = extraction.blocks.indexOf(block);
           const before = extraction.blocks.slice(0, at).filter((b) => b.type !== "figure").slice(-2).map(blockText).join(" ");
@@ -307,7 +309,8 @@ const enrichImage = async ({ buffer, fileName, kind, cache, params, log, save })
  *   which are cached so they are not asked about again. `failedPages` are the
  *   pages whose visuals could not be described; the caller marks them for retry.
  */
-export const enrichWithVisuals = async ({ kind, buffer, extraction, fileName, docId, version, log }) => {
+/** `checkpoint`, when given, is awaited before each vision call and throws to abandon the document (job cancelled). */
+export const enrichWithVisuals = async ({ kind, buffer, extraction, fileName, docId, version, log, checkpoint }) => {
   const params = await loadVisualParams();
 
   if (!params.enabled) {
@@ -316,7 +319,7 @@ export const enrichWithVisuals = async ({ kind, buffer, extraction, fileName, do
   }
 
   const cache = await loadFigureCache(docId, figureModelTag());
-  const args = { buffer, extraction, fileName, kind, cache, params, log, save: { docId, version } };
+  const args = { buffer, extraction, fileName, kind, cache, params, log, save: { docId, version }, checkpoint };
   const outcome = kind === "pdf" ? await enrichPdf(args) : kind === "docx" ? await enrichDocx(args) : await enrichImage(args);
 
   const described = outcome.blocks.filter((b) => b.type === "figure").length;

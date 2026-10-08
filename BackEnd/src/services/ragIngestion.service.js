@@ -94,12 +94,13 @@ const extractBlocks = (kind, buffer) => {
  * warning is missing is worse than a document that is not searchable yet). The
  * previous live version, if any, stays live until a complete replacement exists.
  */
-const runRagStage = async ({ document, buffer, fileName, log }) => {
+const runRagStage = async ({ document, buffer, fileName, log, checkpoint }) => {
   const docId = document.docId;
 
   const kind = kindOfFileName(fileName);
   const extraction = await withTiming(`[ingest ${docId}] extract ${kind} structure`, () => extractBlocks(kind, buffer));
   const { totalPages, pages } = extraction;
+  await checkpoint();
   log(`${describeKind(kind)}: ${kind === "pdf" ? `${totalPages} pages, ` : ""}${extraction.blocks.length} structural blocks`);
 
   await documentPages.ensurePages(docId, pages.map((p) => p.pageNumber));
@@ -113,8 +114,9 @@ const runRagStage = async ({ document, buffer, fileName, log }) => {
   // document; pages it could not describe are marked below so a retry redoes only those.
   const version = document.liveVersion + 1;
   const enrichment = await withTiming(`[ingest ${docId}] describe visuals`, () =>
-    enrichWithVisuals({ kind, buffer, extraction, fileName, docId, version, log })
+    enrichWithVisuals({ kind, buffer, extraction, fileName, docId, version, log, checkpoint })
   );
+  await checkpoint();
   const blocks = enrichment.blocks;
 
   const params = await loadChunkParams();
@@ -193,6 +195,7 @@ const runRagStage = async ({ document, buffer, fileName, log }) => {
   }
 
   await runWithConcurrency(inBatches(toEmbed, EMBED_GROUP_SIZE), GROUP_CONCURRENCY, async (group) => {
+    await checkpoint(); // outside the try: a cancelled job must stop, not mark the group's pages failed
     try {
       const embeddings = await generateEmbeddings(group.map((c) => c.text));
       await chunks.insertChildren(
@@ -232,7 +235,11 @@ const runRagStage = async ({ document, buffer, fileName, log }) => {
  * archival (only if not already done) for a document, and finalizes its
  * status. Shared by both a fresh upload's job and a retry's job.
  */
-export const processDocument = async (document) => {
+export const processDocument = async (document, { jobId } = {}) => {
+  // Awaited between the slow steps: throws JobCancelledError once an operator has cancelled this job.
+  const checkpoint = async () => {
+    if (jobId && (await jobs.isJobCancelled(jobId))) throw new jobs.JobCancelledError(jobId);
+  };
   const log = (msg) => logger.info(`[ingest ${document.docId}] ${msg}`);
   const documentStart = Date.now();
 
@@ -240,6 +247,7 @@ export const processDocument = async (document) => {
     throw new Error(`Document ${document.docId} has no tempFilePath — cannot process without the original bytes`);
   }
 
+  await checkpoint();
   const buffer = await storage.getBuffer(document.tempFilePath);
   const fileName = document.title;
 
@@ -255,7 +263,7 @@ export const processDocument = async (document) => {
   if (ragAlreadyDone) {
     log(`version ${document.liveVersion} already live and complete -> skipping RAG stage`);
   } else {
-    ({ totalPages } = await runRagStage({ document, buffer, fileName, log }));
+    ({ totalPages } = await runRagStage({ document, buffer, fileName, log, checkpoint }));
   }
 
   const finalPageRows = await documentPages.findPagesByDoc(document.docId);
@@ -270,6 +278,7 @@ export const processDocument = async (document) => {
   // a retry with an external_ref already set skips straight past this.
   let workdriveFileId = document.externalRef?.startsWith("upload:") ? null : document.externalRef;
   if (!workdriveFileId && chunksCreated > 0) {
+    await checkpoint();
     await documents.updateIngestState(document.docId, { ingestStatus: "workdrive_uploading" });
     try {
       const result = await uploadOriginalFile(buffer, fileName, document.docId);
@@ -351,7 +360,7 @@ export const processDocument = async (document) => {
  * worker. This is what lets POST /api/documents/upload return 202
  * immediately regardless of document size.
  */
-export const enqueueIngestion = async ({ filePath, fileName }) => {
+export const enqueueIngestion = async ({ filePath, fileName, source }) => {
   const kind = kindOfFileName(fileName);
   if (!kind) {
     await deleteTempFile(filePath);
@@ -397,7 +406,8 @@ export const enqueueIngestion = async ({ filePath, fileName }) => {
     await deleteStoredFile(key);
     throw err;
   }
-  const job = await jobs.createJob({ jobType: "process_document", docId: document.docId });
+  // `source` tags the job so "Stop" can find everything one feature (the Drive sync) queued.
+  const job = await jobs.createJob({ jobType: "process_document", docId: document.docId, payload: source ? { source } : undefined });
 
   logger.info(`[upload] document ${document.docId} queued (job ${job.id})`);
 
@@ -499,4 +509,21 @@ export const deleteDocument = async (docId) => {
   );
 
   return { documentId: docId, title: removed.title, chunks: removed.chunks, images: removed.images, warnings };
+};
+
+/**
+ * Throws away a document whose ingestion was cancelled: its chunks, figures and
+ * stored files, so nothing half-built stays searchable and a later sync imports
+ * the file again from scratch. Never throws; a failure is logged and the
+ * document is left as "failed" so it still shows up in the list.
+ */
+export const discardDocument = async (docId) => {
+  try {
+    // deleteDocument() refuses documents that look in-flight.
+    await documents.updateIngestState(docId, { ingestStatus: "failed", errorMessage: "Ingestion cancelled" });
+    await deleteDocument(docId);
+  } catch (err) {
+    if (err?.status === 404) return;
+    logger.error(`[cancel ${docId}] could not discard the cancelled document`, err);
+  }
 };
