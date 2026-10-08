@@ -75,7 +75,6 @@ export interface DriveSyncFile {
 /** One sync that found new or changed files. */
 export interface DriveSyncRun {
   id: number;
-  trigger: "auto" | "manual";
   started_at: string;
   /** null while it is still importing. */
   finished_at: string | null;
@@ -103,8 +102,6 @@ export interface DriveSyncStatus {
   /** Stop was pressed and the sync is winding down. */
   stopping: boolean;
   configured: boolean;
-  auto_sync: boolean;
-  interval_minutes: number;
   /** GDRIVE_SYNC_LIMIT: only the first N files are synced. null = whole folder. */
   limit: number | null;
   phase: "idle" | "scanning" | "importing";

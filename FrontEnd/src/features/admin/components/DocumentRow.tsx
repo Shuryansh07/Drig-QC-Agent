@@ -76,7 +76,7 @@ export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleti
           {inFlight ? (
             <div className="space-y-1.5">
               <Progress value={doc.status === "queued" ? 0 : doc.progress_percent} aria-label={`${doc.title} progress`} />
-              <p className="text-micro text-muted-foreground">
+              {/* <p className="text-micro text-muted-foreground">
                 {doc.status === "queued"
                   ? "Waiting for the background worker to pick this up."
                   : doc.status === "workdrive_uploading"
@@ -84,7 +84,7 @@ export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleti
                     : pages > 0
                       ? `${(doc.processed_pages ?? 0).toLocaleString()} of ${pages.toLocaleString()} pages done`
                       : "Reading the PDF."}
-              </p>
+              </p> */}
             </div>
           ) : null}
 

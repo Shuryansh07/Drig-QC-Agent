@@ -119,9 +119,7 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
             </Badge>
           </div>
           <p className="text-micro text-muted-foreground">
-            {status.auto_sync
-              ? `New files are imported automatically every ${status.interval_minutes} minutes.`
-              : "Files are imported only when you click Sync now."}
+            Files are imported only when you click Sync now.
             {status.limit !== null
               ? ` Test mode: only the first ${n(status.limit)} files are synced.`
               : ""}
@@ -301,7 +299,7 @@ function DriveSyncRunItem({
         />
         <div className="min-w-0 flex-1">
           <p className="text-micro font-medium">
-            {run.trigger === "auto" ? "Automatic sync" : "Manual sync"} ·{" "}
+            Sync · 
             {new Date(run.started_at).toLocaleString()}
             {running ? " · in progress" : run.stopped ? " · stopped" : ""}
           </p>

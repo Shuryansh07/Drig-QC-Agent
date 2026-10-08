@@ -9,7 +9,7 @@ import os from "node:os";
 import { logger } from "./utils/logger.js";
 import { claimNextJob, completeJob, failJob, recoverStaleJobs, isJobCancelled, JobCancelledError } from "./db/jobs.js";
 import * as documents from "./db/documents.js";
-import { processDocument, discardDocument } from "./services/ragIngestion.service.js";
+import { processDocument, pauseDocument } from "./services/ragIngestion.service.js";
 import { TEMP_UPLOAD_DIR } from "./middleware/upload.middleware.js";
 import { pool } from "./db/pool.js";
 import * as storage from "./services/storage.service.js";
@@ -57,8 +57,8 @@ const runJob = async (job) => {
 
     // Cancelled while its last step ran: nothing should stay from it.
     if (await isJobCancelled(job.id)) {
-      logger.warn(`[job ${job.id}] cancelled by an operator -> discarding document ${job.docId}`);
-      await discardDocument(job.docId);
+      logger.warn(`[job ${job.id}] cancelled by an operator -> document ${job.docId} stays queued`);
+      await pauseDocument(job.docId);
       return;
     }
     await completeJob(job.id);
@@ -68,8 +68,8 @@ const runJob = async (job) => {
     );
   } catch (err) {
     if (err instanceof JobCancelledError) {
-      logger.warn(`[job ${job.id}] stopped after ${Date.now() - start}ms (cancelled by an operator) -> discarding document ${job.docId}`);
-      if (job.docId) await discardDocument(job.docId);
+      logger.warn(`[job ${job.id}] stopped after ${Date.now() - start}ms (cancelled by an operator) -> document ${job.docId} stays queued`);
+      if (job.docId) await pauseDocument(job.docId);
       return;
     }
     logger.error(`[job ${job.id}] failed after ${Date.now() - start}ms`, err);

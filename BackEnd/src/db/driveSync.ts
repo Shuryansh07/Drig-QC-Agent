@@ -14,14 +14,47 @@ export interface LedgerFile {
 export interface LedgerRow {
   file_id: string;
   modified_time: string | null;
+  doc_id: string | null;
   status: "waiting" | "downloading" | "queued" | "duplicate" | "failed";
 }
 
 export const listLedger = async (): Promise<LedgerRow[]> =>
-  (await pool.query(`select file_id, modified_time, status from drive_sync_file`)).rows;
+  (await pool.query(`select file_id, modified_time, doc_id, status from drive_sync_file`)).rows;
 
-export const createRun = async (trigger: string, found: number, total: number): Promise<number> =>
-  Number((await pool.query(`insert into drive_sync_run (trigger, found, total) values ($1, $2, $3) returning id`, [trigger, found, total])).rows[0].id);
+export const createRun = async (trigger: string, found: number, total: number, instanceId: string): Promise<number> =>
+  Number(
+    (
+      await pool.query(`insert into drive_sync_run (trigger, found, total, instance_id) values ($1, $2, $3, $4) returning id`, [
+        trigger,
+        found,
+        total,
+        instanceId,
+      ])
+    ).rows[0].id
+  );
+
+// A run whose process has not beaten its heart for this long is taken for dead.
+const STALE = "interval '45 seconds'";
+
+/** Beats the run's heart and returns whether Stop was pressed (on any backend instance). */
+export const heartbeat = async (runId: number): Promise<boolean> =>
+  (await pool.query(`update drive_sync_run set heartbeat_at = now() where id = $1 returning stop_requested`, [runId])).rows[0]?.stop_requested ?? false;
+
+/** A sync that is alive right now, wherever it runs. */
+export const findLiveRun = async (): Promise<{ id: number; instanceId: string | null; stopRequested: boolean } | null> => {
+  const row = (
+    await pool.query(
+      `select id, instance_id, stop_requested from drive_sync_run
+        where finished_at is null and heartbeat_at > now() - ${STALE} order by id desc limit 1`
+    )
+  ).rows[0];
+  return row ? { id: Number(row.id), instanceId: row.instance_id, stopRequested: row.stop_requested } : null;
+};
+
+/** Tells every live sync to stop (Stop pressed on any instance). */
+export const requestStop = async (): Promise<void> => {
+  await pool.query(`update drive_sync_run set stop_requested = true where finished_at is null and heartbeat_at > now() - ${STALE}`);
+};
 
 /** Puts the files in the ledger as "waiting" under this run, in order (new or changed ones, and ones to retry). */
 export const assignFilesToRun = async (runId: number, files: LedgerFile[]): Promise<void> => {
@@ -33,8 +66,9 @@ export const assignFilesToRun = async (runId: number, files: LedgerFile[]): Prom
             as f(id, name, folder, type, modified_time, seq)
      on conflict (file_id) do update
         set name = excluded.name, folder = excluded.folder, type = excluded.type,
-            modified_time = excluded.modified_time, status = 'waiting', doc_id = null,
-            message = null, run_id = excluded.run_id, seq = excluded.seq, updated_at = now()`,
+            status = 'waiting', message = null,
+            doc_id = case when drive_sync_file.modified_time is not distinct from excluded.modified_time then drive_sync_file.doc_id end,
+            modified_time = excluded.modified_time, run_id = excluded.run_id, seq = excluded.seq, updated_at = now()`,
     [
       runId,
       files.map((f) => f.id),
@@ -96,23 +130,29 @@ export const updateRun = async (
   );
 };
 
-/** Stop: files whose job was cancelled go back to "waiting", so the next sync sends them again. */
+/** Stop: files whose job was cancelled go back to "waiting", keeping their (paused, queued) document, so the next sync hands it back to the worker. */
 export const requeueFilesOfDocs = async (docIds: string[]): Promise<void> => {
   if (docIds.length === 0) return;
   await pool.query(
-    `update drive_sync_file set status = 'waiting', doc_id = null, message = 'Stopped before it finished', updated_at = now()
+    `update drive_sync_file set status = 'waiting', message = 'Paused: queued until the next sync', updated_at = now()
       where doc_id = any($1::uuid[])`,
     [docIds]
   );
 };
 
-/** After a backend restart: a sync that was running cannot be; its half-done files wait for the next one. */
-export const recoverInterruptedRuns = async (): Promise<void> => {
-  await pool.query(`update drive_sync_file set status = 'waiting', message = 'Interrupted by a restart', updated_at = now() where status = 'downloading'`);
+/**
+ * Settles syncs whose process died (no heartbeat): their half-done files wait
+ * for the next Sync. Never touches a run another instance is still running.
+ */
+export const settleDeadRuns = async (): Promise<void> => {
   await pool.query(
-    `update drive_sync_run set finished_at = now(), stopped = true, current_file = null,
-            error = coalesce(error, 'Interrupted by a backend restart; Sync resumes it')
-      where finished_at is null`
+    `with dead as (
+       update drive_sync_run set finished_at = now(), stopped = true, current_file = null,
+              error = coalesce(error, 'Interrupted (the backend running it stopped); Sync resumes it')
+        where finished_at is null and heartbeat_at < now() - ${STALE}
+        returning id)
+     update drive_sync_file set status = 'waiting', message = 'Interrupted', updated_at = now()
+      where status = 'downloading' and run_id in (select id from dead)`
   );
 };
 

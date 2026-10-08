@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { TEMP_UPLOAD_DIR } from "../middleware/upload.middleware.js";
-import { enqueueIngestion, discardDocument } from "./ragIngestion.service.js";
+import { enqueueIngestion, pauseDocument, resumeIngestion } from "./ragIngestion.service.js";
 import { kindOfFileName, extensionOfKind, isImageKind } from "./chunking/documentTypes.js";
 import { listUploadTitles } from "../db/documents.js";
 import { cancelJobsBySource, countActiveJobsBySource } from "../db/jobs.js";
@@ -32,9 +32,6 @@ const GOOGLE_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordproc
 // For trying the pipeline on a few files first: only the first N files of the
 // folder (in listFiles' order) are ever synced. Unset or 0 = no limit.
 const SYNC_LIMIT = parseInt(process.env.GDRIVE_SYNC_LIMIT || "0", 10) || Infinity;
-// Off unless explicitly "true": a sync only starts from the admin panel's button.
-const AUTO_SYNC = process.env.GDRIVE_AUTO_SYNC === "true";
-const INTERVAL_MS = parseInt(process.env.GDRIVE_SYNC_INTERVAL_MS || "600000", 10);
 // Minimum gap between two Google API requests (listing and downloads alike),
 // so a big folder does not trip Google's rate limit (HTTP 429).
 const REQUEST_DELAY_MS = parseInt(process.env.GDRIVE_REQUEST_DELAY_MS || "1000", 10);
@@ -47,6 +44,9 @@ const MAX_RETRIES = parseInt(process.env.GDRIVE_MAX_RETRIES || "6", 10);
 // Tags the worker jobs this sync creates, so Stop can find and cancel them.
 const JOB_SOURCE = "drive-sync";
 const MAX_RUNS = 10;
+// Identifies this backend process in drive_sync_run, since several can share one database.
+const INSTANCE_ID = crypto.randomUUID();
+const HEARTBEAT_MS = 5000;
 
 // Google-native files have no bytes of their own; Drive exports them. PDF is
 // the export to use: Drive renders identical bytes for an unchanged file, so
@@ -268,7 +268,7 @@ const ingestFiles = async (run, files) => {
     await ledger.updateRun(run.id, { currentFile: file.fileName });
     await ledger.setFileState(file.id, { status: "downloading" });
     try {
-      const result = await downloadAndEnqueue(file);
+      const result = (file.docId && (await resumeIngestion(file.docId, JOB_SOURCE))) || (await downloadAndEnqueue(file));
       await ledger.setFileState(file.id, { status: result.duplicate ? "duplicate" : "queued", docId: result.documentId });
       if (result.duplicate) run.duplicates++;
       else run.queued++;
@@ -330,30 +330,49 @@ export const scanDriveFolder = () =>
  * Lists the folder, then downloads and enqueues what the ledger says is still
  * to do (new or changed files, plus ones left waiting, failed or cancelled by
  * an earlier run), one at a time, up to GDRIVE_SYNC_LIMIT files of the folder.
- * `trigger` ("auto" | "manual") is shown in the admin panel's sync history.
+ * Only ever started from the admin panel's Sync button; nothing runs on a timer.
  */
-export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
+export const syncDriveFolder = () =>
   begin("scanning", async () => {
+    await ledger.settleDeadRuns();
+    if (await ledger.findLiveRun()) {
+      // Another backend sharing this database is already syncing.
+      throw new Error("A Drive sync is already running on another backend. Stop it first.");
+    }
     const files = (await scan()).slice(0, SYNC_LIMIT);
     const known = new Map((await ledger.listLedger()).map((row) => [row.file_id, row]));
     const pending = files.filter((f) => {
       const row = known.get(f.id);
       return !row || row.modified_time !== f.modifiedTime || !["queued", "duplicate"].includes(row.status);
     });
+    // A file Stop paused keeps its queued document: resuming gives that document a new job instead of downloading again.
+    for (const f of pending) {
+      const row = known.get(f.id);
+      if (row?.doc_id && row.modified_time === f.modifiedTime) f.docId = row.doc_id;
+    }
     if (pending.length === 0) {
       state.lastNoChangeAt = new Date().toISOString();
-      logger.info(`[drive-sync] ${trigger} sync: no new or changed files`);
+      logger.info(`[drive-sync] sync: no new or changed files`);
       return;
     }
     const resumed = pending.filter((f) => known.has(f.id) && known.get(f.id).modified_time === f.modifiedTime).length;
-    logger.info(`[drive-sync] ${trigger} sync: importing ${pending.length} file(s) of ${files.length} (${resumed} resumed from an earlier run)`);
+    logger.info(`[drive-sync] sync: importing ${pending.length} file(s) of ${files.length} (${resumed} resumed from an earlier run)`);
 
-    const run = { id: await ledger.createRun(trigger, files.length, pending.length), processed: 0, queued: 0, duplicates: 0, failed: 0, stopped: false };
+    const run = { id: await ledger.createRun("manual", files.length, pending.length, INSTANCE_ID), processed: 0, queued: 0, duplicates: 0, failed: 0, stopped: false };
     await ledger.assignFilesToRun(
       run.id,
       pending.map((f) => ({ id: f.id, name: f.fileName, folder: f.folder, type: f.type, modifiedTime: f.modifiedTime }))
     );
     state.phase = "importing";
+    // Shows this run is alive, and picks up a Stop pressed on any backend instance.
+    const beat = setInterval(() => {
+      ledger
+        .heartbeat(run.id)
+        .then((stop) => {
+          if (stop) state.stopRequested = true;
+        })
+        .catch(() => {});
+    }, HEARTBEAT_MS);
     try {
       await ingestFiles(run, pending);
       if (!run.stopped) await summarize(state.lastFiles.files, state.lastFiles.skipped); // refresh the "not imported yet" counts
@@ -361,6 +380,7 @@ export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
       await ledger.updateRun(run.id, { error: err.message });
       throw err;
     } finally {
+      clearInterval(beat);
       await ledger.updateRun(run.id, { ...run, currentFile: null, finished: true });
     }
   });
@@ -373,64 +393,60 @@ export const syncDriveFolder = ({ trigger = "manual" } = {}) =>
  * picks up exactly there.
  */
 export const stopDriveSync = async () => {
+  await ledger.settleDeadRuns();
+  const live = await ledger.findLiveRun();
   const active = await countActiveJobsBySource(JOB_SOURCE);
-  if (state.phase === "idle" && active === 0) {
+  if (state.phase === "idle" && !live && active === 0) {
     throw Object.assign(new Error("No Drive sync is running"), { status: 409 });
   }
   state.stopRequested = true;
+  // The sync may be running in another backend sharing this database: tell it through the database.
+  await ledger.requestStop();
   // Let the loop wind down first, or the file it is on could queue a job after the cancel below.
   await state.work;
+  for (let waited = 0; (await ledger.findLiveRun()) && waited < 60; waited++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (await ledger.findLiveRun()) {
+    throw Object.assign(new Error("Another backend is running the sync and did not stop. Stop or restart that backend."), { status: 409 });
+  }
 
   const cancelled = await cancelJobsBySource(JOB_SOURCE);
   const docIds = cancelled.map((job) => job.docId).filter(Boolean);
   await ledger.requeueFilesOfDocs(docIds);
-  // A running job's worker discards its own document; the rest never started, so drop theirs here
-  // (otherwise a later sync would take the leftover document for a duplicate and never process it).
-  await Promise.all(cancelled.filter((job) => job.docId && !job.wasRunning).map((job) => discardDocument(job.docId)));
+  // Their documents stay, parked as "queued" with no job, so the worker leaves them alone; a running job's
+  // worker parks its own document at its next checkpoint. The next Sync gives them new jobs (resumeIngestion).
+  await Promise.all(docIds.map((docId) => pauseDocument(docId)));
   logger.info(`[drive-sync] stopped: ${cancelled.length} job(s) cancelled, ${docIds.length} file(s) waiting for the next sync`);
 };
 
-export const getDriveSyncStatus = async () => ({
-  configured: isDriveSyncConfigured(),
-  auto_sync: AUTO_SYNC,
-  interval_minutes: Math.round(INTERVAL_MS / 60000),
-  limit: Number.isFinite(SYNC_LIMIT) ? SYNC_LIMIT : null,
-  phase: state.phase,
-  stopping: state.stopRequested && state.phase !== "idle",
-  pending_jobs: await countActiveJobsBySource(JOB_SOURCE),
-  /** Files a stopped, failed or interrupted sync left to do: the next Sync resumes with them. */
-  resumable: await ledger.countResumable(),
-  last_error: state.lastError,
-  last_no_change_at: state.lastNoChangeAt,
-  runs: await ledger.listRuns(MAX_RUNS),
-  last_scan: state.lastScan && {
-    at: state.lastScan.at,
-    supported: state.lastScan.supported,
-    in_knowledge_base: state.lastScan.inKnowledgeBase,
-    remaining: state.lastScan.remaining,
-    by_type: state.lastScan.byType,
-    skipped: state.lastScan.skipped,
-  },
-});
-
-/**
- * At startup: settles a sync a restart interrupted (its files wait for the next
- * Sync). With GDRIVE_AUTO_SYNC=true, also syncs now and every GDRIVE_SYNC_INTERVAL_MS.
- */
-export const startDriveSyncTimer = () => {
-  ledger.recoverInterruptedRuns().catch((err) => logger.error("[drive-sync] could not settle an interrupted sync", err));
-  if (!isDriveSyncConfigured() || !AUTO_SYNC) {
-    logger.info("[drive-sync] automatic sync off (sync from the admin panel, or set GDRIVE_AUTO_SYNC=true)");
-    return;
-  }
-  const tick = () => {
-    try {
-      syncDriveFolder({ trigger: "auto" });
-    } catch (err) {
-      if (err.status !== 409) logger.error("[drive-sync] scheduled sync failed", err);
-    }
+export const getDriveSyncStatus = async () => {
+  await ledger.settleDeadRuns();
+  // A sync running in another backend sharing this database counts as running here too.
+  const live = await ledger.findLiveRun();
+  return {
+    configured: isDriveSyncConfigured(),
+    limit: Number.isFinite(SYNC_LIMIT) ? SYNC_LIMIT : null,
+    phase: state.phase !== "idle" ? state.phase : live ? "importing" : "idle",
+    stopping: (state.stopRequested && state.phase !== "idle") || Boolean(live?.stopRequested),
+    pending_jobs: await countActiveJobsBySource(JOB_SOURCE),
+    /** Files a stopped, failed or interrupted sync left to do: the next Sync resumes with them. */
+    resumable: await ledger.countResumable(),
+    last_error: state.lastError,
+    last_no_change_at: state.lastNoChangeAt,
+    runs: await ledger.listRuns(MAX_RUNS),
+    last_scan: state.lastScan && {
+      at: state.lastScan.at,
+      supported: state.lastScan.supported,
+      in_knowledge_base: state.lastScan.inKnowledgeBase,
+      remaining: state.lastScan.remaining,
+      by_type: state.lastScan.byType,
+      skipped: state.lastScan.skipped,
+    },
   };
-  tick();
-  setInterval(tick, INTERVAL_MS);
-  logger.info(`[drive-sync] automatic sync every ${Math.round(INTERVAL_MS / 1000)}s`);
+};
+
+/** At startup: settles a sync a restart interrupted (its files wait for the next Sync). */
+export const settleInterruptedSyncs = () => {
+  ledger.settleDeadRuns().catch((err) => logger.error("[drive-sync] could not settle an interrupted sync", err));
 };

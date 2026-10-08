@@ -129,6 +129,10 @@ export const cancelJobsBySource = async (source: string): Promise<CancelledJob[]
   return rows.map((r: any) => ({ docId: r.doc_id, wasRunning: r.prev === "running" }));
 };
 
+/** True while a pending or running job exists for the document (it is with the worker). */
+export const hasActiveJob = async (docId: string): Promise<boolean> =>
+  (await pool.query(`select 1 from ingestion_job where doc_id = $1 and status in ('pending','running') limit 1`, [docId])).rowCount! > 0;
+
 export const countActiveJobsBySource = async (source: string): Promise<number> => {
   const { rows } = await pool.query(
     `select count(*)::int as n from ingestion_job where status in ('pending','running') and payload->>'source' = $1`,

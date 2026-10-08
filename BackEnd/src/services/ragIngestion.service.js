@@ -511,6 +511,45 @@ export const deleteDocument = async (docId) => {
   return { documentId: docId, title: removed.title, chunks: removed.chunks, images: removed.images, warnings };
 };
 
+const IN_FLIGHT = ["queued", "processing", "rag_processing", "workdrive_uploading"];
+
+/**
+ * Parks a document whose job was cancelled (Drive sync Stop): it shows as
+ * "queued", keeps everything already ingested, and no job points at it, so the
+ * worker leaves it alone until resumeIngestion() gives it a new one.
+ */
+export const pauseDocument = async (docId) => {
+  try {
+    const document = await documents.findById(docId);
+    if (!document || !IN_FLIGHT.includes(document.ingestStatus)) return;
+    await documents.updateIngestState(docId, { ingestStatus: "queued", errorMessage: null });
+  } catch (err) {
+    logger.error(`[pause ${docId}] could not park the document`, err);
+  }
+};
+
+/**
+ * The Drive sync's resume: gives a paused document a new job (the worker skips
+ * what it already finished). Returns null when the document cannot be resumed
+ * (gone, or its stored original is missing), so the caller imports the file again.
+ */
+export const resumeIngestion = async (docId, source) => {
+  const document = await documents.findById(docId);
+  if (!document) return null;
+  if (["completed", "completed_with_errors"].includes(document.ingestStatus)) {
+    return { documentId: docId, status: document.ingestStatus, duplicate: true };
+  }
+  if (await jobs.hasActiveJob(docId)) return { documentId: docId, status: document.ingestStatus };
+  if (!document.tempFilePath || !(await storage.exists(document.tempFilePath))) {
+    await discardDocument(docId);
+    return null;
+  }
+  await documents.updateIngestState(docId, { ingestStatus: "queued", errorMessage: null });
+  const job = await jobs.createJob({ jobType: "process_document", docId, payload: { source } });
+  logger.info(`[resume] document ${docId} re-queued (job ${job.id})`);
+  return { documentId: docId, jobId: job.id, status: "queued" };
+};
+
 /**
  * Throws away a document whose ingestion was cancelled: its chunks, figures and
  * stored files, so nothing half-built stays searchable and a later sync imports
