@@ -156,6 +156,23 @@ export const settleDeadRuns = async (): Promise<void> => {
   );
 };
 
+/**
+ * Documents that look in flight but have no pending or running job, so no worker
+ * will ever take them (paused by Stop, or orphaned by a crash). Ones created in
+ * the last 2 minutes are left out: an upload creates its document a moment before its job.
+ */
+export const listJoblessDocuments = async (): Promise<{ docId: string; title: string }[]> =>
+  (
+    await pool.query(
+      `select d.doc_id, d.title
+         from kb_document d join kb_document_ingest_state s on s.doc_id = d.doc_id
+        where s.ingest_status in ('queued','processing','rag_processing','workdrive_uploading')
+          and d.created_at < now() - interval '2 minutes'
+          and not exists (select 1 from ingestion_job j where j.doc_id = d.doc_id and j.status in ('pending','running'))
+        order by d.created_at`
+    )
+  ).rows.map((r: any) => ({ docId: r.doc_id, title: r.title }));
+
 export const countResumable = async (): Promise<number> =>
   (await pool.query(`select count(*)::int as n from drive_sync_file where status in ('waiting','failed')`)).rows[0].n;
 

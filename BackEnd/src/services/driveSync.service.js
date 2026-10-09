@@ -261,11 +261,25 @@ const downloadAndEnqueue = async (file) => {
   return enqueueIngestion({ filePath, fileName: file.fileName, source: JOB_SOURCE });
 };
 
-const ingestFiles = async (run, files) => {
-  // One at a time, like the admin panel's uploads: the worker queues the heavy work anyway.
+/**
+ * Sends the files to the worker, one at a time. With `resumeOnly`, a file is
+ * only given a new job for its paused document, never downloaded; the ones that
+ * cannot be resumed come back as `deferred` to be downloaded later.
+ */
+const ingestFiles = async (run, files, { resumeOnly = false } = {}) => {
+  const deferred = [];
   for (const file of files) {
     if (state.stopRequested) break;
     await ledger.updateRun(run.id, { currentFile: file.fileName });
+    if (resumeOnly) {
+      const resumed = file.docId && (await resumeIngestion(file.docId, JOB_SOURCE));
+      if (!resumed) {
+        // Its document is gone: the file is downloaded afresh in the last step.
+        file.docId = null;
+        deferred.push(file);
+        continue;
+      }
+    }
     await ledger.setFileState(file.id, { status: "downloading" });
     try {
       const result = (file.docId && (await resumeIngestion(file.docId, JOB_SOURCE))) || (await downloadAndEnqueue(file));
@@ -287,6 +301,27 @@ const ingestFiles = async (run, files) => {
     await ledger.updateRun(run.id, run);
   }
   run.stopped = state.stopRequested;
+  return deferred;
+};
+
+/**
+ * Holds the sync until the worker has finished everything this sync queued, so
+ * new files are only added once the queue is empty. Ends early on Stop.
+ */
+const waitForQueueToDrain = async (run) => {
+  let active = await countActiveJobsBySource(JOB_SOURCE);
+  if (active === 0) return;
+  logger.info(`[drive-sync] waiting for the worker to finish ${active} queued document(s) before adding new files`);
+  try {
+    while (active > 0) {
+      await ledger.updateRun(run.id, { currentFile: `Waiting for ${active} queued document(s) to finish processing` });
+      await sleep(3000);
+      active = await countActiveJobsBySource(JOB_SOURCE);
+    }
+  } catch (err) {
+    if (!(err instanceof StopError)) throw err;
+    run.stopped = true;
+  }
 };
 
 /**
@@ -350,13 +385,16 @@ export const syncDriveFolder = () =>
       const row = known.get(f.id);
       if (row?.doc_id && row.modified_time === f.modifiedTime) f.docId = row.doc_id;
     }
-    if (pending.length === 0) {
+    const jobless = await ledger.listJoblessDocuments();
+    if (pending.length === 0 && jobless.length === 0) {
       state.lastNoChangeAt = new Date().toISOString();
       logger.info(`[drive-sync] sync: no new or changed files`);
       return;
     }
     const resumed = pending.filter((f) => known.has(f.id) && known.get(f.id).modified_time === f.modifiedTime).length;
-    logger.info(`[drive-sync] sync: importing ${pending.length} file(s) of ${files.length} (${resumed} resumed from an earlier run)`);
+    logger.info(
+      `[drive-sync] sync: ${jobless.length} queued document(s) to resume, then ${pending.length} file(s) of ${files.length} (${resumed} resumed from an earlier run)`
+    );
 
     const run = { id: await ledger.createRun("manual", files.length, pending.length, INSTANCE_ID), processed: 0, queued: 0, duplicates: 0, failed: 0, stopped: false };
     await ledger.assignFilesToRun(
@@ -374,7 +412,20 @@ export const syncDriveFolder = () =>
         .catch(() => {});
     }, HEARTBEAT_MS);
     try {
-      await ingestFiles(run, pending);
+      // 1. Queued documents first: every paused or job-less document gets a job again.
+      for (const doc of jobless) {
+        if (state.stopRequested) break;
+        await resumeIngestion(doc.docId, JOB_SOURCE);
+      }
+      const paused = pending.filter((f) => f.docId);
+      const deferred = await ingestFiles(run, paused, { resumeOnly: true });
+      // 2. Then wait until the worker has processed them all.
+      if (!state.stopRequested) await waitForQueueToDrain(run);
+      // 3. Only now new, changed and failed files (and paused ones whose document is gone).
+      if (!state.stopRequested && !run.stopped) {
+        await ingestFiles(run, [...pending.filter((f) => !f.docId), ...deferred]);
+      }
+      run.stopped = run.stopped || state.stopRequested;
       if (!run.stopped) await summarize(state.lastFiles.files, state.lastFiles.skipped); // refresh the "not imported yet" counts
     } catch (err) {
       await ledger.updateRun(run.id, { error: err.message });
