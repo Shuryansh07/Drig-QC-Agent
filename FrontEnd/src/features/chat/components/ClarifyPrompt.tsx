@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 interface ClarifyPromptProps {
   clarify: ClarifyRequest;
   onAnswer: (value: string) => void;
-  onSkip: () => void;
 }
 
 /**
@@ -12,7 +11,7 @@ interface ClarifyPromptProps {
  * the values retrieval actually found to distinguish. Styled like any other part
  * of the conversation — nothing here is a failure.
  */
-export function ClarifyPrompt({ clarify, onAnswer, onSkip }: ClarifyPromptProps) {
+export function ClarifyPrompt({ clarify, onAnswer }: ClarifyPromptProps) {
   return (
     <section
       aria-labelledby={`clarify-${clarify.slot}`}
@@ -41,16 +40,6 @@ export function ClarifyPrompt({ clarify, onAnswer, onSkip }: ClarifyPromptProps)
           </Button>
         ))}
       </div>
-
-      {clarify.allowSkip ? (
-        <Button
-          variant="ghost"
-          onClick={onSkip}
-          className="text-muted-foreground mt-3 h-11 rounded-full text-base"
-        >
-          I don't know
-        </Button>
-      ) : null}
     </section>
   );
 }

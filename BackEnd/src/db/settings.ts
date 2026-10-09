@@ -40,6 +40,19 @@ export const getSetting = get;
 export const getRetrievalMatchCount = () => get<number>("retrieval.match_count", 8);
 export const getRetrievalAdmitMinSimilarity = () => get<number>("retrieval.admit_min_similarity", 0.35);
 export const getRetrievalAdmitOnExactCode = () => get<boolean>("retrieval.admit_on_exact_code", true);
+// FAQ of resolved questions. A new question within `min_similarity` of one brings that answer's passages back;
+// `strong_similarity` also skips the clarification question; `dedupe_similarity` stops near-copies piling up.
+export const getFaqMinSimilarity = () => get<number>("faq.min_similarity", 0.8);
+export const getFaqStrongSimilarity = () => get<number>("faq.strong_similarity", 0.92);
+export const getFaqMatchCount = () => get<number>("faq.match_count", 3);
+export const getFaqDedupeSimilarity = () => get<number>("faq.dedupe_similarity", 0.97);
+// Conversation context: how many earlier turns travel with a question (0 turns off follow-up understanding).
+export const getContextMaxTurns = () => get<number>("context.max_turns", 6);
+// Check 1: ask the technician which guide they mean when several match equally well.
+export const getClarifyEnabled = () => get<boolean>("clarify.enabled", true);
+export const getClarifySimilarityGap = () => get<number>("clarify.similarity_gap", 0.05);
+export const getClarifyMinOptions = () => get<number>("clarify.min_options", 2);
+export const getClarifyMaxOptions = () => get<number>("clarify.max_options", 4);
 export const getEmbeddingModel = () => get<string>("gate.embedding_model", "text-embedding-3-small");
 export const getAnswerModel = () => get<string>("gate.answer_model", "gpt-4o-mini");
 export const getDeadlineMs = () => get<number>("gate.deadline_ms", 22000);

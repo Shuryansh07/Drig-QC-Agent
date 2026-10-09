@@ -11,7 +11,6 @@ interface TurnViewProps {
   turn: Turn;
   onOpenCitation: (chunkId: string) => void;
   onAnswerClarify: (value: string) => void;
-  onSkipClarify: () => void;
   onRequestEngineer: () => void;
   onResolution: (value: Resolution) => void;
 }
@@ -21,7 +20,6 @@ export function TurnView({
   turn,
   onOpenCitation,
   onAnswerClarify,
-  onSkipClarify,
   onRequestEngineer,
   onResolution,
 }: TurnViewProps) {
@@ -41,7 +39,6 @@ export function TurnView({
         <ClarifyPrompt
           clarify={turn.clarify}
           onAnswer={onAnswerClarify}
-          onSkip={onSkipClarify}
         />
       ) : null}
 

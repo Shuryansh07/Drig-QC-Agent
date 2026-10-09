@@ -5,6 +5,7 @@ import { toVisionImages, visionContentParts } from "./chunking/imageTiles.js";
 import { findFigureImages } from "../db/images.js";
 import * as storage from "./storage.service.js";
 import { logger } from "../utils/logger.js";
+import { historyBlock } from "./conversationContext.service.js";
 
 const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
 // Used instead of VISION_MODEL only when a drawing is attached: reading wire labels
@@ -33,13 +34,18 @@ Writing style — this is as important as the grounding rules:
 - Write like a knowledgeable person explaining this out loud to a colleague: full sentences, connected paragraphs, a natural spoken tone.
 - Do NOT format the answer as a rigid outline, spec sheet, or form. Do not use markdown — no **bold**, no # headers, no bullet points, no asterisks, no numbered lists. The output is rendered as plain text, so any markdown characters would show up as literal symbols, not formatting.
 - Even when the source material is a numbered procedure, describe it conversationally in prose (e.g. "First you'll want to... once that's done, ...") instead of reproducing a numbered list.
-- Be direct and concise, but sound human, not like a specification document.`;
+- Be direct and concise, but sound human, not like a specification document.
+
+Conversation context:
+- When an earlier conversation is shown, it is only there so you understand what "it", "that" or "the second step" refers to and keep your answer related to what was just discussed. Answer the latest question.
+- The earlier conversation is NOT evidence. Every fact in your answer must still come from the retrieved evidence below, never from what was said earlier.
+- A similar question that a technician already marked as resolved may be shown with its answer. Use it only as a guide to what a good answer looks like. It is NOT evidence: every fact must still come from the retrieved evidence below, and if the evidence disagrees with it, follow the evidence.`;
 
 export const INSUFFICIENT_EVIDENCE_ANSWER = "The available document evidence is insufficient to answer this question.";
 
 // Not all models accept a custom temperature (e.g. gpt-5 only supports its
 // default) — omit it and rely on the strict, grounded system prompt instead.
-export const buildMessages = ({ question, chunks, images = [] }) => {
+export const buildMessages = ({ question, chunks, images = [], history = [], faq = null }) => {
   const evidenceText = chunks
     // Word documents have no page numbers: their evidence is located by section only.
     .map((c, i) => {
@@ -48,7 +54,10 @@ export const buildMessages = ({ question, chunks, images = [] }) => {
     })
     .join("\n\n");
 
-  const text = `Question: ${question}\n\nRetrieved evidence:\n${evidenceText}`;
+  const earlier = historyBlock(history);
+  const context = earlier ? `Earlier in this conversation (context only, not evidence):\n${earlier}\n\n` : "";
+  const reference = faq ? `A similar question was resolved before (reference only, not evidence):\nQ: ${faq.question}\nA: ${faq.answer}\n\n` : "";
+  const text = `${context}${reference}Question: ${question}\n\nRetrieved evidence:\n${evidenceText}`;
   if (images.length === 0) {
     return [
       { role: "system", content: SYSTEM_PROMPT },
@@ -176,14 +185,14 @@ export const generateAnswer = async ({ question, chunks, images }) => {
  * Callers must have passed the retrieval gate first: with no chunks there is
  * nothing to ground on, and this refuses rather than letting the model improvise.
  */
-export async function* streamAnswer({ question, chunks, images, signal }) {
+export async function* streamAnswer({ question, chunks, images, history = [], faq = null, signal }) {
   if (chunks.length === 0) throw new Error("streamAnswer called with no evidence — the retrieval gate should have refused first");
 
   const evidenceImages = images ?? (await withTiming("load evidence images", () => loadEvidenceImages(chunks)));
   if (evidenceImages.length > 0) logger.info(`[answer] attaching ${evidenceImages.length} evidence image(s): ${evidenceImages.map((i) => i.label).join("; ")}`);
 
   const stream = await getOpenAIClient().chat.completions.create(
-    { model: modelFor(evidenceImages), messages: buildMessages({ question, chunks, images: evidenceImages }), stream: true },
+    { model: modelFor(evidenceImages), messages: buildMessages({ question, chunks, images: evidenceImages, history, faq }), stream: true },
     { signal }
   );
 

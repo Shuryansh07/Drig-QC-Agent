@@ -1,4 +1,4 @@
-import type { NotCoveredInfo } from "@/types/contracts";
+import type { ClarifyRequest, NotCoveredInfo } from "@/types/contracts";
 import { parseSSEData } from "@/lib/sse";
 
 /**
@@ -32,13 +32,15 @@ export type WireEvent =
   | { type: "images"; images: WireImage[] }
   | { type: "delta"; text: string }
   | { type: "not_covered"; notCovered: NotCoveredInfo }
+  /** Several guides match equally and the question does not say which: the technician picks one. */
+  | { type: "clarify"; clarify: ClarifyRequest }
   | { type: "deadline_warning"; elapsedMs: number }
   /** verified is false when Checks 5-7 flagged a possible issue — the answer is
    *  still the real generated text, not withheld, but the UI must caution on it. */
   | { type: "complete"; answer: string; durationMs: number; verified: boolean }
   | { type: "error"; code: string; message: string };
 
-const TYPES = new Set(["stage", "sources", "images", "delta", "not_covered", "deadline_warning", "complete", "error"]);
+const TYPES = new Set(["stage", "sources", "images", "delta", "not_covered", "clarify", "deadline_warning", "complete", "error"]);
 
 export function parseWireEvent(frame: string): WireEvent | null {
   const parsed = parseSSEData(frame);

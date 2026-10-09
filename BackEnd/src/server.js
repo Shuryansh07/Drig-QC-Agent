@@ -11,6 +11,7 @@ import pdfRoutes from "./routes/pdf.routes.js";
 import documentRoutes from "./routes/document.routes.js";
 import ragRoutes from "./routes/rag.routes.js";
 import citationRoutes from "./routes/citations.routes.js";
+import conversationRoutes from "./routes/conversation.routes.js";
 import { getQueueStats } from "./db/jobs.js";
 import { logger } from "./utils/logger.js";
 import audioRoutes from "./routes/audio.routes.js";
@@ -25,6 +26,7 @@ app.use("/api/pdf", pdfRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/rag", ragRoutes);
 app.use("/api/citations", citationRoutes);
+app.use("/api/conversations", conversationRoutes);
 app.use("/api/audio", audioRoutes);
 
 app.get("/", (req, res) => {

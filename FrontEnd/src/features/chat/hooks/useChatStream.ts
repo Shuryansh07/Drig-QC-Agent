@@ -10,7 +10,7 @@ import { queryKeys } from "@/lib/query-client";
 import { isOnline } from "@/lib/offline";
 import { logger } from "@/lib/logger";
 import { uuid } from "@/lib/uuid";
-import type { AnswerImage, AnswerStep, Citation, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
+import type { AnswerImage, AnswerStep, Citation, ClarifyRequest, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
 // import { uuid } from "@/lib/uuid";
 
 // No auth/tenant selection UI exists yet (AuthProvider is a stub — see
@@ -34,7 +34,7 @@ const appendTurn = (queryClient: ReturnType<typeof useQueryClient>, sessionId: s
 /** "T200-install-guide.docx" -> "T200-install-guide". */
 const docName = (title: string | null | undefined): string => (title ?? "").replace(/\.(pdf|docx)$/i, "");
 
-const toCitations = (sources: WireSource[]): Citation[] =>
+export const toCitations = (sources: WireSource[]): Citation[] =>
   Array.from(
     new Map(
       sources.map((s) => {
@@ -56,7 +56,7 @@ const toCitations = (sources: WireSource[]): Citation[] =>
     ).values(),
   );
 
-const toImages = (images: WireImage[]): AnswerImage[] =>
+export const toImages = (images: WireImage[]): AnswerImage[] =>
   images.map((i) => ({ label: i.label, url: i.url, page: i.page, documentId: i.document_id }));
 
 const agentTurn = (overrides: Partial<Turn>): Turn => ({
@@ -84,13 +84,34 @@ const agentTurn = (overrides: Partial<Turn>): Turn => ({
  * Fields the real backend has no data for (frame, clarify, conflict) are
  * simply never dispatched, rather than faked.
  */
+/** How many earlier turns travel with a question, so follow-ups are understood (the server trims it again). */
+const CONTEXT_TURNS = 6;
+
+/**
+ * The conversation so far as the server wants it: the technician's questions and
+ * the answers they got, oldest first. Refusals and clarification prompts are left
+ * out: they say nothing about the topic.
+ */
+const contextTurns = (turns: Turn[]): { role: "technician" | "agent"; text: string }[] =>
+  turns
+    .filter((t) => t.text.trim() && (t.role === "technician" || t.gateOutcome === "answered"))
+    .slice(-CONTEXT_TURNS)
+    .map((t) => ({ role: t.role, text: t.text }));
+
+/** The technician's answer to a clarification: re-asks the original question with their pick. */
+export interface ClarificationAnswer {
+  originalQuestion: string;
+  value: string;
+  skipped: boolean;
+}
+
 export function useChatStream(sessionId: string) {
   const dispatch = useAppDispatch();
   const queryClient = useQueryClient();
   const abortRef = useRef<AbortController | null>(null);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, options?: { clarification?: ClarificationAnswer }) => {
       const trimmed = text.trim();
       if (!trimmed) return;
 
@@ -100,12 +121,25 @@ export function useChatStream(sessionId: string) {
         return;
       }
 
+      // Read before this question is added, so it is not sent as its own context. When answering a
+      // clarification, the exchange that raised it (question, prompt, pick) is left out too:
+      // the server already gets the original question and the pick.
+      const earlier = queryClient.getQueryData<Conversation>(queryKeys.conversation(sessionId))?.turns ?? [];
+      const askedAt = options?.clarification
+        ? earlier.map((t) => t.role === "technician" && t.text === options.clarification!.originalQuestion).lastIndexOf(true)
+        : earlier.length;
+      const history = contextTurns(earlier.slice(0, askedAt < 0 ? earlier.length : askedAt));
+
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
 
+      // The server saves the chat; these ids are what it saves the turns under, so a later "resolved" can name the answer.
+      const technicianTurnId = uuid();
+      const agentTurnId = uuid();
+
       appendTurn(queryClient, sessionId, {
-        turnId: uuid(),
+        turnId: technicianTurnId,
         role: "technician",
         text: trimmed,
         steps: [],
@@ -141,7 +175,7 @@ export function useChatStream(sessionId: string) {
 
       const commitAnswer = (answer: string, durationMs: number, verified: boolean) => {
         const step: AnswerStep = { n: 1, text: answer, sourceChunkIds: citations.map((c) => c.chunkId) };
-        const turn = agentTurn({ text: answer, steps: [step], citations, images, gateOutcome: "answered", durationMs, verified });
+        const turn = agentTurn({ turnId: agentTurnId, text: answer, steps: [step], citations, images, gateOutcome: "answered", durationMs, verified });
         dispatch(chatActions.serverEvent({ type: "done", turn }));
         appendTurn(queryClient, sessionId, turn);
         dispatch(chatActions.clearStream());
@@ -149,18 +183,41 @@ export function useChatStream(sessionId: string) {
 
       const commitRefusal = (notCovered: NotCoveredInfo) => {
         // No durationMs: "Answered in Xms" under a refusal would be false.
-        const turn = agentTurn({ text: notCovered.message, gateOutcome: "not_covered", notCovered });
+        const turn = agentTurn({ turnId: agentTurnId, text: notCovered.message, gateOutcome: "not_covered", notCovered });
         dispatch(chatActions.serverEvent({ type: "not_covered", notCovered }));
         dispatch(chatActions.serverEvent({ type: "done", turn }));
         appendTurn(queryClient, sessionId, turn);
         dispatch(chatActions.clearStream());
       };
 
+      const commitClarify = (clarify: ClarifyRequest) => {
+        const turn = agentTurn({ turnId: agentTurnId, text: clarify.question, gateOutcome: "clarify", clarify });
+        dispatch(chatActions.serverEvent({ type: "clarify", clarify }));
+        dispatch(chatActions.serverEvent({ type: "done", turn }));
+        appendTurn(queryClient, sessionId, turn);
+        dispatch(chatActions.clearStream());
+      };
+
+      const clarification = options?.clarification;
+
       try {
         const response = await fetch(apiUrl("/rag/query/stream"), {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...(await authHeaders()) },
-          body: JSON.stringify({ customer_id: CUSTOMER_ID, question: trimmed }),
+          body: JSON.stringify(
+            clarification
+              ? {
+                  customer_id: CUSTOMER_ID,
+                  question: clarification.originalQuestion,
+                  clarification: { value: clarification.value, skipped: clarification.skipped },
+                  history,
+                  session_id: sessionId,
+                  turn_id: technicianTurnId,
+                  agent_turn_id: agentTurnId,
+                  display_text: trimmed,
+                }
+              : { customer_id: CUSTOMER_ID, question: trimmed, history, session_id: sessionId, turn_id: technicianTurnId, agent_turn_id: agentTurnId },
+          ),
           signal: ctrl.signal,
         });
 
@@ -203,6 +260,12 @@ export function useChatStream(sessionId: string) {
               finished = true;
               flushText();
               commitRefusal(event.notCovered);
+              break;
+
+            case "clarify":
+              finished = true;
+              flushText();
+              commitClarify(event.clarify);
               break;
 
             case "complete":

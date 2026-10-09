@@ -9,26 +9,13 @@ interface NotCoveredCardProps {
 /**
  * Neutral styling, never red (§5). If "I don't have that documented" reads as a
  * fault, technicians read the product as broken and stop using it — the exact
- * outcome the gates exist to avoid. Lead with what *is* covered so the boundary
- * becomes learnable.
+ * outcome the gates exist to avoid. It does not list the manuals that exist: a
+ * list of unrelated documents next to a refusal reads as noise.
  */
 export function NotCoveredCard({ info, onRequestEngineer }: NotCoveredCardProps) {
   return (
     <section className="border-neutral-note-border bg-neutral-note-bg rounded-2xl border p-4 sm:p-5">
       <p className="text-body text-answer-fg">{info.message}</p>
-
-      {info.coveredTopics.length > 0 ? (
-        <div className="mt-4">
-          <p className="text-body font-semibold">What I do have for this vehicle</p>
-          <ul className="text-body text-muted-foreground mt-2 space-y-1.5">
-            {info.coveredTopics.map((topic) => (
-              <li key={topic} className="before:mr-2 before:content-['—']">
-                {topic}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
 
       <Button onClick={onRequestEngineer} className="mt-5 h-11 rounded-full px-6 text-base">
         Ask an engineer

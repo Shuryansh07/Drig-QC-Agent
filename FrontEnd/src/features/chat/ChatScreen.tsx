@@ -81,6 +81,14 @@ export default function ChatScreen() {
   );
 
   const turns = conversation?.turns ?? [];
+
+  // The technician picked an option on a clarification: ask the question that
+  // preceded it again, with their pick, instead of sending the pick as a question of its own.
+  const answerClarify = (clarifyTurnId: string | null, value: string) => {
+    const upTo = clarifyTurnId ? turns.findIndex((t) => t.turnId === clarifyTurnId) : turns.length;
+    const original = turns.slice(0, upTo < 0 ? turns.length : upTo).reverse().find((t) => t.role === "technician");
+    void send(value, original ? { clarification: { originalQuestion: original.text, value, skipped: false } } : undefined);
+  };
   const busy = streaming === "thinking" || streaming === "streaming";
 
   // Follows the answer down as it streams: this re-runs on the question being sent
@@ -140,8 +148,7 @@ export default function ChatScreen() {
             key={turn.turnId}
             turn={turn}
             onOpenCitation={openCitation}
-            onAnswerClarify={(value) => void send(value)}
-            onSkipClarify={() => void send("I don't know")}
+            onAnswerClarify={(value) => answerClarify(turn.turnId, value)}
             onRequestEngineer={openEngineer}
             onResolution={(resolution) =>
               recordResolution.mutate({ turnId: turn.turnId, resolution })
@@ -151,8 +158,7 @@ export default function ChatScreen() {
 
         <StreamingTurnView
           onOpenCitation={openCitation}
-          onAnswerClarify={(value) => void send(value)}
-          onSkipClarify={() => void send("I don't know")}
+          onAnswerClarify={(value) => answerClarify(null, value)}
           onRequestEngineer={openEngineer}
         />
 

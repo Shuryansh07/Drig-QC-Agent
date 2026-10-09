@@ -9,8 +9,12 @@ import {
 import { verifyAnswer } from "../services/answerVerification.service.js";
 import * as storage from "../services/storage.service.js";
 import { recordGap } from "../db/gaps.js";
-import { listLiveDocumentTitles } from "../db/documents.js";
-import { getDeadlineMs } from "../db/settings.js";
+import { decideClarification, withClarification } from "../services/clarification.service.js";
+import { sanitizeHistory, contextualizeQuestion } from "../services/conversationContext.service.js";
+import { findFaq, mergeFaqChunks } from "../services/faq.service.js";
+import { saveTurn, isUuid } from "../db/chat.js";
+import { markFaqUsed } from "../db/faq.js";
+import { getDeadlineMs, getContextMaxTurns, getClarifyEnabled, getClarifySimilarityGap, getClarifyMinOptions, getClarifyMaxOptions } from "../db/settings.js";
 import { logger } from "../utils/logger.js";
 
 const HEARTBEAT_MS = 10_000;
@@ -45,10 +49,10 @@ const refuse = async ({ question, retrieval }) => {
   await recordGap({ queryText: question, queryEmbedding: embedding, retrievedIds: candidateIds, reason: "not_covered" }).catch((err) =>
     logger.error("[rag] failed to record knowledge gap", err)
   );
-  const coveredTopics = await listLiveDocumentTitles().catch(() => []);
 
   return {
-    coveredTopics,
+    // The client no longer shows what is covered, so the list of every manual is not sent at all.
+    coveredTopics: [],
     message: "I don't have documented guidance for that. I can hand this to an engineer with everything you've told me.",
   };
 };
@@ -111,6 +115,9 @@ export const queryRag = async (req, res) => {
  *
  *   {type:"stage", stage:"retrieving"}                      immediately
  *   {type:"not_covered", notCovered:{...}}                  gate refused -> stream ends, no LLM call
+ *   {type:"clarify", clarify:{slot, question, options, allowSkip}}  several guides match equally and the
+ *                                                            question does not say which -> stream ends, no
+ *                                                            LLM call; the client re-asks with `clarification`
  *   {type:"sources", sources:[{document_id, page_number}]}  as soon as retrieval finishes
  *   {type:"images", images:[{label, url, page, document_id}]}  only when a diagram/photo
  *                                                            was actually attached as evidence —
@@ -134,12 +141,27 @@ export const queryRag = async (req, res) => {
  */
 export const streamRagQuery = async (req, res) => {
   const requestStart = Date.now();
-  const { question } = req.body || {};
+  const { question: askedQuestion, clarification, history: rawHistory } = req.body || {};
 
   // Before headers: a bad request is still an ordinary JSON 400.
-  if (!question || typeof question !== "string" || !question.trim()) {
+  if (!askedQuestion || typeof askedQuestion !== "string" || !askedQuestion.trim()) {
     return res.status(400).json({ success: false, message: "question is required" });
   }
+  // After the technician answered a clarification, retrieval and the answer use
+  // the original question plus their pick. Asked once per question: a request
+  // that carries a clarification (even a skipped one) is never asked again.
+  const clarifiedQuestion = withClarification(askedQuestion, clarification);
+  const alreadyClarified = Boolean(clarification);
+
+  // Chat history lives in the database, not the browser: every turn is saved here as it happens, under
+  // the ids the client chose (so a later "resolved" can name the answer). A request without a valid
+  // session id still works; it just isn't saved.
+  const { session_id, turn_id, agent_turn_id, display_text } = req.body || {};
+  const sessionId = isUuid(session_id) ? session_id : null;
+  const persist = (turnId, turn) =>
+    sessionId && isUuid(turnId)
+      ? saveTurn({ sessionId, turnId, ...turn }).catch((err) => logger.error("[chat] could not save turn", err))
+      : Promise.resolve();
 
   const deadlineMs = await getDeadlineMs().catch(() => FALLBACK_DEADLINE_MS);
 
@@ -171,24 +193,59 @@ export const streamRagQuery = async (req, res) => {
   });
 
   try {
-    logger.info(`[rag stream] received: "${question}"`);
+    logger.info(`[rag stream] received: "${clarifiedQuestion}"`);
     send({ type: "stage", stage: "retrieving" });
+    await persist(turn_id, { role: "technician", text: (typeof display_text === "string" && display_text.trim()) || askedQuestion.trim() });
+
+    // Conversation context: the last few turns, so a follow-up ("and the wiring?") is searched and
+    // answered as the question it really is. A question that stands alone is used as it is.
+    const history = sanitizeHistory(rawHistory, await getContextMaxTurns().catch(() => 6));
+    const question = await contextualizeQuestion({ question: clarifiedQuestion, history });
+    if (closed) return;
 
     const retrieval = await retrieveRelevantChunks({ question });
     if (closed) return;
 
-    if (!retrieval.admission.admitted) {
+    // The FAQ of resolved questions, searched with the same question embedding. A close match brings back the
+    // passages that answered it (they join the evidence) and its answer (a reference for the model).
+    const faq = await findFaq({ embedding: retrieval.embedding });
+    const chunks = faq.chunks.length > 0 ? mergeFaqChunks(retrieval.chunks, faq.chunks) : retrieval.chunks;
+    let admission = retrieval.admission;
+    // Retrieval alone refused, but a near-identical question was resolved before: its passages are enough.
+    if (!admission.admitted && faq.strong && chunks.length > 0) {
+      admission = { admitted: true, reason: "faq", topSimilarity: faq.best.similarity };
+    }
+    if (faq.matches.length > 0) {
+      logger.info(`[rag stream] FAQ: ${faq.matches.length} similar resolved question(s), best ${faq.best.similarity.toFixed(3)} ("${faq.best.question}"), ${faq.chunks.length} passage(s)`);
+    }
+
+    if (!admission.admitted) {
       const notCovered = await refuse({ question, retrieval });
+      await persist(agent_turn_id, { role: "agent", text: notCovered.message, gateOutcome: "not_covered", turnJson: { notCovered } });
       send({ type: "not_covered", notCovered });
       return;
     }
 
-    logger.info(`[rag stream] ${retrieval.chunks.length} chunk(s) admitted (${retrieval.admission.reason}) after ${Date.now() - requestStart}ms`);
-    send({ type: "sources", sources: sourcesFromChunks(retrieval.chunks) });
+    logger.info(`[rag stream] ${chunks.length} chunk(s) admitted (${admission.reason}) after ${Date.now() - requestStart}ms`);
+
+    // Blueprint Check 1: the evidence is good enough, but if several different guides match about
+    // equally well and the question does not say which, ask before answering. No LLM call is made.
+    if (!alreadyClarified && !faq.strong && (await getClarifyEnabled().catch(() => true))) {
+      const [gap, minOptions, maxOptions] = await Promise.all([getClarifySimilarityGap(), getClarifyMinOptions(), getClarifyMaxOptions()]);
+      const clarify = decideClarification({ question, chunks, admission, gap, minOptions, maxOptions });
+      if (clarify) {
+        logger.info(`[rag stream] asking for clarification (${clarify.options.length} option(s): ${clarify.options.map((o) => o.value).join(" | ")})`);
+        await persist(agent_turn_id, { role: "agent", text: clarify.question, gateOutcome: "clarify", turnJson: { clarify } });
+        send({ type: "clarify", clarify });
+        return;
+      }
+    }
+
+    send({ type: "sources", sources: sourcesFromChunks(chunks) });
 
     // Resolved once, right after retrieval — the same set grounds generation,
     // verification, and (if the answer survives) what the technician is shown.
-    const images = await loadEvidenceImages(retrieval.chunks);
+    const images = await loadEvidenceImages(chunks);
     if (closed) return;
     if (images.length > 0) send({ type: "images", images: await imagesForResponse(images) });
 
@@ -196,7 +253,7 @@ export const streamRagQuery = async (req, res) => {
 
     let answer = "";
     let firstTokenLogged = false;
-    for await (const delta of streamAnswer({ question, chunks: retrieval.chunks, images, signal: abort.signal })) {
+    for await (const delta of streamAnswer({ question, chunks, images, history, faq: faq.best, signal: abort.signal })) {
       if (!firstTokenLogged) {
         firstTokenLogged = true;
         logger.info(`[rag stream] first token after ${Date.now() - requestStart}ms`);
@@ -215,7 +272,7 @@ export const streamRagQuery = async (req, res) => {
     // A bare refusal has nothing to check, and skips straight to "complete".
     let verified = true;
     if (finalAnswer !== INSUFFICIENT_EVIDENCE_ANSWER) {
-      const verification = await verifyAnswer({ question, answer: finalAnswer, chunks: retrieval.chunks, images });
+      const verification = await verifyAnswer({ question, answer: finalAnswer, chunks: chunks, images });
       if (closed) return;
       if (!verification.passed) {
         logger.warn(`[rag stream] answer unverified, shown with a caution banner: "${question}"`);
@@ -223,7 +280,26 @@ export const streamRagQuery = async (req, res) => {
       }
     }
 
-    send({ type: "complete", answer: finalAnswer, durationMs: Date.now() - requestStart, verified });
+    const durationMs = Date.now() - requestStart;
+    send({ type: "complete", answer: finalAnswer, durationMs, verified });
+    if (finalAnswer !== INSUFFICIENT_EVIDENCE_ANSWER) {
+      // What the FAQ needs if this answer is later marked resolved: the standalone question (follow-ups
+      // already rewritten) and the passages that grounded it.
+      await persist(agent_turn_id, {
+        role: "agent",
+        text: finalAnswer,
+        gateOutcome: "answered",
+        turnJson: {
+          sources: sourcesFromChunks(chunks),
+          images: images.map((i) => ({ label: i.label, docId: i.docId, page: i.page, s3Key: i.s3Key })),
+          verified,
+          durationMs,
+          standalone_question: question,
+          source_chunk_ids: chunks.map((c) => c.chunkId),
+        },
+      });
+      markFaqUsed(faq.matches.map((m) => m.faqId)).catch(() => {});
+    }
     logger.info(`[rag stream] TOTAL request time: ${Date.now() - requestStart}ms`);
   } catch (error) {
     if (closed) return; // the client left; nothing to tell them

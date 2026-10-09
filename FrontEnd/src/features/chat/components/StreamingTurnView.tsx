@@ -11,7 +11,6 @@ import type { AnswerStep } from "@/types/contracts";
 interface StreamingTurnViewProps {
   onOpenCitation: (chunkId: string) => void;
   onAnswerClarify: (value: string) => void;
-  onSkipClarify: () => void;
   onRequestEngineer: () => void;
 }
 
@@ -25,7 +24,6 @@ const STAGE_LABEL = {
 export function StreamingTurnView({
   onOpenCitation,
   onAnswerClarify,
-  onSkipClarify,
   onRequestEngineer,
 }: StreamingTurnViewProps) {
   const stream = useAppSelector((s) => s.chat);
@@ -75,7 +73,7 @@ export function StreamingTurnView({
       ) : null}
 
       {stream.clarify ? (
-        <ClarifyPrompt clarify={stream.clarify} onAnswer={onAnswerClarify} onSkip={onSkipClarify} />
+        <ClarifyPrompt clarify={stream.clarify} onAnswer={onAnswerClarify} />
       ) : null}
 
       {stream.notCovered ? (
