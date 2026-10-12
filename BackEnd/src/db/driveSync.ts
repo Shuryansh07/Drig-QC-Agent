@@ -173,6 +173,16 @@ export const listJoblessDocuments = async (): Promise<{ docId: string; title: st
     )
   ).rows.map((r: any) => ({ docId: r.doc_id, title: r.title }));
 
+/** Drops waiting/failed ledger rows (with no document) for files that are not in the current listing. Returns how many. */
+export const pruneMissingFiles = async (listedIds: string[]): Promise<number> => {
+  if (listedIds.length === 0) return 0;
+  const { rowCount } = await pool.query(
+    `delete from drive_sync_file where status in ('waiting','failed') and doc_id is null and not (file_id = any($1::text[]))`,
+    [listedIds]
+  );
+  return rowCount ?? 0;
+};
+
 export const countResumable = async (): Promise<number> =>
   (await pool.query(`select count(*)::int as n from drive_sync_file where status in ('waiting','failed')`)).rows[0].n;
 
