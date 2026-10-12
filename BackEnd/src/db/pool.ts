@@ -33,7 +33,8 @@ if (parsed.port === "6543") {
 }
 
 export const pool = new Pool({
-  ...buildPgConfig(connectionString, (msg) => logger.warn(msg)),
+  // DB_SECRET_ARN: take the password from AWS Secrets Manager (so an RDS rotation needs no edit here).
+  ...buildPgConfig(connectionString, (msg) => logger.warn(msg), { secretId: process.env.DB_SECRET_ARN || undefined }),
   max: 10,
 });
 

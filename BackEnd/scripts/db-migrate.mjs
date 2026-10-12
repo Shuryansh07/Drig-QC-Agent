@@ -18,7 +18,8 @@ const platform =
 if (!["aws", "supabase"].includes(platform)) throw new Error(`DB_PLATFORM must be aws or supabase, got "${platform}"`);
 console.log(`Platform: ${platform}`);
 
-const client = new pg.Client(buildPgConfig(connectionString));
+// DB_ADMIN_SECRET_ARN: the admin password comes from Secrets Manager (the RDS master secret rotates).
+const client = new pg.Client(buildPgConfig(connectionString, console.warn, { secretId: process.env.DB_ADMIN_SECRET_ARN || undefined }));
 await client.connect();
 
 const run = async (label, sql) => {

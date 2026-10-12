@@ -28,6 +28,7 @@ const FOLDER_ID = process.env.GDRIVE_FOLDER_ID;
 // from their share URL, or the API answers 404 even though the link works.
 const FOLDER_RESOURCE_KEY = process.env.GDRIVE_RESOURCE_KEY;
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 const GOOGLE_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 // For trying the pipeline on a few files first: only the first N files of the
 // folder (in listFiles' order) are ever synced. Unset or 0 = no limit.
@@ -145,6 +146,11 @@ const fileNameOf = (f) => {
 const classify = (f) => {
   const exportType = GOOGLE_EXPORTS[f.mimeType];
   if (exportType) return { type: exportType, supported: true };
+  // A Google-native item (shortcut, slides, form...) has no file bytes to download, whatever its name
+  // says: a shortcut called "Guide.pdf" is not a PDF, and asking Drive for its content is a 403.
+  if (f.mimeType === SHORTCUT_MIME) return { type: "Shortcut", supported: false };
+  if (f.mimeType === "application/vnd.google-apps.presentation") return { type: "Slides", supported: false };
+  if (f.mimeType.startsWith("application/vnd.google-apps.")) return { type: "Other Google file", supported: false };
   const kind = kindOfFileName(fileNameOf(f));
   if (kind === "pdf") return { type: "PDF", supported: true };
   if (kind === "docx") return { type: "Word", supported: true };
@@ -168,13 +174,13 @@ const classify = (f) => {
  * ones come back ready to sync: `fileName` is the title the document gets
  * (".pdf" appended to an exported Google file), `exportPdf` says how to fetch it.
  */
-const listFiles = async (folderId, resourceKey, acc = { files: [], skipped: {} }, folderPath = "") => {
+const listFiles = async (folderId, resourceKey, acc = { files: [], skipped: {}, seen: new Set() }, folderPath = "") => {
   const subfolders = [];
   let pageToken;
   do {
     const params = new URLSearchParams({
       q: `'${folderId}' in parents and trashed = false`,
-      fields: "nextPageToken, files(id, name, mimeType, modifiedTime, resourceKey)",
+      fields: "nextPageToken, files(id, name, mimeType, modifiedTime, resourceKey, shortcutDetails(targetId, targetMimeType, targetResourceKey))",
       orderBy: "name",
       pageSize: "1000",
       supportsAllDrives: "true",
@@ -184,7 +190,18 @@ const listFiles = async (folderId, resourceKey, acc = { files: [], skipped: {} }
     if (pageToken) params.set("pageToken", pageToken);
     const data = await (await driveFetch(`${API_BASE}/files?${params}`, [[folderId, resourceKey]], LIST_DELAY_MS)).json();
 
-    for (const f of data.files ?? []) {
+    for (const listed of data.files ?? []) {
+      let f = listed;
+      // A shortcut stands for another file: import that file, under the shortcut's name. Its content is
+      // fetched by the target's id; the shortcut's own id has no content.
+      if (listed.mimeType === SHORTCUT_MIME && listed.shortcutDetails?.targetId) {
+        const target = listed.shortcutDetails;
+        if (target.targetMimeType === FOLDER_MIME) {
+          acc.skipped["Shortcut to a folder"] = (acc.skipped["Shortcut to a folder"] ?? 0) + 1;
+          continue;
+        }
+        f = { ...listed, id: target.targetId, mimeType: target.targetMimeType, resourceKey: target.targetResourceKey };
+      }
       if (f.mimeType === FOLDER_MIME) {
         subfolders.push(f);
         continue;
@@ -194,6 +211,12 @@ const listFiles = async (folderId, resourceKey, acc = { files: [], skipped: {} }
         acc.skipped[type] = (acc.skipped[type] ?? 0) + 1;
         continue;
       }
+      // The same file can be listed twice (itself and a shortcut to it): it is imported once.
+      if (acc.seen.has(f.id)) {
+        acc.skipped["Shortcut to a file already listed"] = (acc.skipped["Shortcut to a file already listed"] ?? 0) + 1;
+        continue;
+      }
+      acc.seen.add(f.id);
       acc.files.push({
         id: f.id,
         resourceKey: f.resourceKey,
@@ -375,6 +398,10 @@ export const syncDriveFolder = () =>
       throw new Error("A Drive sync is already running on another backend. Stop it first.");
     }
     const files = (await scan()).slice(0, SYNC_LIMIT);
+    // Rows for items the folder no longer lists (a shortcut that now resolves to its target, a deleted file)
+    // would otherwise sit as "N left" forever.
+    const gone = await ledger.pruneMissingFiles(state.lastFiles.files.map((f) => f.id));
+    if (gone > 0) logger.info(`[drive-sync] forgot ${gone} waiting/failed file(s) the folder no longer lists`);
     const known = new Map((await ledger.listLedger()).map((row) => [row.file_id, row]));
     const pending = files.filter((f) => {
       const row = known.get(f.id);
