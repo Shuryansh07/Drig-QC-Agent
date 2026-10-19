@@ -4,6 +4,7 @@ import { AnswerImages } from "@/features/chat/components/AnswerImages";
 import { AssistantMessage } from "@/features/chat/components/AssistantMessage";
 import { ClarifyPrompt } from "@/features/chat/components/ClarifyPrompt";
 import { NotCoveredCard } from "@/features/chat/components/NotCoveredCard";
+import { buildAnswerSteps } from "@/features/chat/lib/procedure";
 import { ConflictCard } from "@/features/chat/components/ConflictCard";
 import { DeadlineNotice } from "@/features/chat/components/DeadlineNotice";
 import type { AnswerStep } from "@/types/contracts";
@@ -40,7 +41,7 @@ export function StreamingTurnView({
     stream.steps.length > 0
       ? stream.steps
       : stream.partialText && !stream.error
-        ? [{ n: 1, text: stream.partialText, sourceChunkIds: stream.citations.map((c) => c.chunkId) }]
+        ? buildAnswerSteps(stream.partialText, stream.citations)
         : [];
 
   return (
