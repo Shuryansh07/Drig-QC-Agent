@@ -16,6 +16,7 @@ export const transcribeAudio = async (buffer, filename) => {
   const transcription = await getClient().audio.transcriptions.create({
     file,
     model: "whisper-1",
+    language: "en",
   });
 
   return transcription.text;
