@@ -10,7 +10,6 @@ import { useRecordResolution } from "@/features/chat/api/mutations";
 import { TurnView } from "@/features/chat/components/TurnView";
 import { StreamingTurnView } from "@/features/chat/components/StreamingTurnView";
 import { ChatComposer } from "@/features/chat/components/ChatComposer";
-import { TranscriptPreview } from "@/features/voice/components/TranscriptPreview";
 import { SourceDrawer } from "@/features/citations/components/SourceDrawer";
 import { HandoffSheet } from "@/features/handoff/components/HandoffSheet";
 import { PageShell } from "@/components/common/PageShell";
@@ -106,7 +105,6 @@ export default function ChatScreen() {
     <PageShell
       dock={
         <div className="space-y-3">
-          <TranscriptPreview onSend={(text) => void send(text)} />
           <ChatComposer
             value={draft}
             busy={busy}
@@ -114,6 +112,7 @@ export default function ChatScreen() {
             onChange={(value) => dispatch(chatActions.draftChanged(value))}
             onSend={() => void send(draft)}
             onStop={cancel}
+            onVoiceSend={(text) => void send(text)}
           />
         </div>
       }

@@ -12,13 +12,15 @@ interface ChatComposerProps {
   onChange: (value: string) => void;
   onSend: () => void;
   onStop: () => void;
+  /** A spoken question, already transcribed: sent straight away. */
+  onVoiceSend: (text: string) => void;
 }
 
 /**
  * A rounded input card: text on top, voice on the left of the bottom row and send
  * on the right. Enter sends, Shift+Enter adds a line.
  */
-export function ChatComposer({ value, busy, offline, onChange, onSend, onStop }: ChatComposerProps) {
+export function ChatComposer({ value, busy, offline, onChange, onSend, onStop, onVoiceSend }: ChatComposerProps) {
   const canSend = value.trim().length > 0 && !busy;
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -41,7 +43,7 @@ export function ChatComposer({ value, busy, offline, onChange, onSend, onStop }:
         />
 
         <div className="flex items-center justify-between gap-2 pt-1">
-          <PushToTalkButton disabled={busy} />
+          <PushToTalkButton disabled={busy} onTranscript={onVoiceSend} />
 
           {busy ? (
             <Button

@@ -16,6 +16,8 @@ const PREFERRED_TYPES = [
 
 /** Shorter than this is a stray tap, not speech. */
 const MIN_RECORDING_MS = 400;
+/** A recording nobody stopped (phone put down, forgotten) ends and is sent after this long. */
+const MAX_RECORDING_MS = 120_000;
 
 export function pickMimeType(): string | null {
   if (typeof MediaRecorder === "undefined") return null;
@@ -32,12 +34,16 @@ interface TranscribeResponse {
   data?: { text: string };
 }
 
+interface UseRecorderOptions {
+  /** Called with the transcript once the recording has been stopped and transcribed. */
+  onTranscript: (text: string) => void;
+}
+
 /**
- * Hold-to-talk capture: records, meters the level for the waveform, and posts the
- * clip to /audio/transcribe. The transcript lands in the preview step, never sent
- * straight to the chat.
+ * Tap-to-toggle capture: records, meters the level for the waveform, and on stop posts
+ * the clip to /audio/transcribe and hands the text to `onTranscript` (the chat sends it).
  */
-export function useRecorder() {
+export function useRecorder({ onTranscript }: UseRecorderOptions) {
   const dispatch = useAppDispatch();
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -47,6 +53,10 @@ export function useRecorder() {
   // Set when the button is released while the mic permission prompt is still open.
   const releasedEarlyRef = useRef(false);
   const startingRef = useRef(false);
+  const autoStopRef = useRef<number | null>(null);
+  const stopRef = useRef<() => Promise<Blob | null>>(async () => null);
+  const onTranscriptRef = useRef(onTranscript);
+  onTranscriptRef.current = onTranscript;
 
   const stopMeter = useCallback(() => {
     if (!meterRef.current) return;
@@ -56,6 +66,8 @@ export function useRecorder() {
   }, []);
 
   const releaseStream = useCallback(() => {
+    if (autoStopRef.current !== null) window.clearTimeout(autoStopRef.current);
+    autoStopRef.current = null;
     stopMeter();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
@@ -108,7 +120,7 @@ export function useRecorder() {
     releaseStream();
 
     if (durationMs < MIN_RECORDING_MS || blob.size === 0) {
-      dispatch(voiceActions.failed("That was too short. Hold the button while you speak."));
+      dispatch(voiceActions.failed("That was too short. Tap the mic, speak, then tap again."));
       return null;
     }
 
@@ -123,17 +135,24 @@ export function useRecorder() {
         dispatch(voiceActions.failed("I couldn't hear anything. Try again, or type the question."));
         return blob;
       }
-      dispatch(voiceActions.transcriptReady(text));
+      dispatch(voiceActions.reset());
+      onTranscriptRef.current(text);
     } catch {
       dispatch(voiceActions.failed("Couldn't turn that into text. Try again, or type the question."));
     }
     return blob;
   }, [dispatch, releaseStream]);
 
+  stopRef.current = stop;
+
   const start = useCallback(async () => {
     if (startingRef.current || recorderRef.current) return;
 
     const mimeType = pickMimeType();
+    if (!window.isSecureContext) {
+      dispatch(voiceActions.failed("Voice needs a secure (https) page. Type the question instead."));
+      return;
+    }
     if (!mimeType || !navigator.mediaDevices?.getUserMedia) {
       dispatch(voiceActions.failed("This browser can't record audio. Type the question instead."));
       return;
@@ -162,11 +181,22 @@ export function useRecorder() {
       recorder.start(250);
       recorderRef.current = recorder;
       startedAtRef.current = Date.now();
+      autoStopRef.current = window.setTimeout(() => void stopRef.current(), MAX_RECORDING_MS);
 
       dispatch(voiceActions.recordingStarted({ mimeType }));
       startMeter(stream);
-    } catch {
-      dispatch(voiceActions.permissionDenied());
+    } catch (err) {
+      // Only a refusal is "access is off": a missing device or an insecure page needs its own message.
+      const name = err instanceof DOMException ? err.name : "";
+      if (name === "NotFoundError" || name === "OverconstrainedError") {
+        dispatch(voiceActions.failed("No microphone found. Plug one in or type the question."));
+      } else if (name === "NotReadableError") {
+        dispatch(voiceActions.failed("The microphone is in use by another app. Close it and try again."));
+      } else if (name === "NotAllowedError" || name === "SecurityError") {
+        dispatch(voiceActions.permissionDenied());
+      } else {
+        dispatch(voiceActions.failed("Couldn't start recording. Try again, or type the question."));
+      }
     } finally {
       startingRef.current = false;
     }
