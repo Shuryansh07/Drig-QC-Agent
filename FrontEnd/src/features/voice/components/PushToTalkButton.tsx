@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 
 interface PushToTalkButtonProps {
   disabled?: boolean;
+  /** The transcribed question, ready to send. */
+  onTranscript: (text: string) => void;
 }
 
 function formatElapsed(ms: number): string {
@@ -14,34 +16,32 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * A round mic button inside the composer. Hold to record, release to send. Voice
+ * A round mic button inside the composer. Tap to start recording, tap again to stop: the clip is transcribed and the question is sent. Voice
  * state is announced as well as animated (§10) — a technician may be looking at
  * the vehicle, not the phone.
  */
-export function PushToTalkButton({ disabled }: PushToTalkButtonProps) {
+export function PushToTalkButton({ disabled, onTranscript }: PushToTalkButtonProps) {
   const { status, levels, elapsedMs, error } = useAppSelector((s) => s.voice);
-  const { start, stop } = useRecorder();
+  const { start, stop } = useRecorder({ onTranscript });
   const recording = status === "recording";
+  const toggle = () => void (recording ? stop() : start());
 
   const label = recording
-    ? `Recording, ${formatElapsed(elapsedMs)}. Release to send.`
+    ? `Recording, ${formatElapsed(elapsedMs)}. Tap to stop and send.`
     : status === "transcribing"
       ? "Writing down what you said"
-      : "Hold to speak";
+      : "Tap to speak";
 
   return (
     <div className="flex min-w-0 items-center gap-2">
       <button
         type="button"
         disabled={disabled || status === "transcribing"}
-        onPointerDown={() => void start()}
-        onPointerUp={() => void stop()}
-        onPointerLeave={() => recording && void stop()}
+        onClick={toggle}
         aria-label={label}
         className={cn(
           "flex h-10 shrink-0 items-center justify-center gap-2 rounded-full transition-colors",
-          // Hold-to-record must not double as a scroll gesture or pop the iOS callout menu.
-          "touch-none select-none [-webkit-touch-callout:none]",
+          "select-none",
           "disabled:opacity-60",
           recording
             ? "bg-destructive text-destructive-foreground px-4"
@@ -60,7 +60,7 @@ export function PushToTalkButton({ disabled }: PushToTalkButtonProps) {
       </button>
 
       <p role="status" className="text-muted-foreground min-w-0 truncate text-sm">
-        {error ?? (recording ? "Release to send" : status === "transcribing" ? "Writing it down…" : "")}
+        {error ?? (recording ? "Tap to stop and send" : status === "transcribing" ? "Writing it down…" : "")}
       </p>
     </div>
   );

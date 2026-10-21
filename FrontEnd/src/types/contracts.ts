@@ -85,6 +85,8 @@ export interface AnswerStep {
   sourceChunkIds: string[];
   /** Renders in safety colours. The only place red is permitted. */
   isSafetyStep?: boolean;
+  /** "note" is text around a procedure (the intro, the closing line): shown unnumbered. Default "step". */
+  kind?: "step" | "note";
 }
 
 export type GateOutcome = "answered" | "clarify" | "not_covered" | "conflict";

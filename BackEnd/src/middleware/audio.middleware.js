@@ -21,7 +21,9 @@ const upload = multer({
     fileSize: 25 * 1024 * 1024, // 25 MB (OpenAI Whisper API limit)
   },
   fileFilter: (req, file, cb) => {
-    if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    // Browsers label recordings with codec parameters ("audio/webm;codecs=opus"): compare the base type only.
+    const baseType = String(file.mimetype).split(";")[0].trim().toLowerCase();
+    if (ALLOWED_MIME_TYPES.includes(baseType)) {
       cb(null, true);
     } else {
       cb(new Error("Unsupported audio file type"));

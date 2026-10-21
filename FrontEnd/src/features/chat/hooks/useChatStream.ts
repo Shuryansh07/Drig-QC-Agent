@@ -10,7 +10,8 @@ import { queryKeys } from "@/lib/query-client";
 import { isOnline } from "@/lib/offline";
 import { logger } from "@/lib/logger";
 import { uuid } from "@/lib/uuid";
-import type { AnswerImage, AnswerStep, Citation, ClarifyRequest, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
+import { buildAnswerSteps } from "@/features/chat/lib/procedure";
+import type { AnswerImage, Citation, ClarifyRequest, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
 // import { uuid } from "@/lib/uuid";
 
 // No auth/tenant selection UI exists yet (AuthProvider is a stub — see
@@ -174,8 +175,7 @@ export function useChatStream(sessionId: string) {
       let finished = false;
 
       const commitAnswer = (answer: string, durationMs: number, verified: boolean) => {
-        const step: AnswerStep = { n: 1, text: answer, sourceChunkIds: citations.map((c) => c.chunkId) };
-        const turn = agentTurn({ turnId: agentTurnId, text: answer, steps: [step], citations, images, gateOutcome: "answered", durationMs, verified });
+        const turn = agentTurn({ turnId: agentTurnId, text: answer, steps: buildAnswerSteps(answer, citations), citations, images, gateOutcome: "answered", durationMs, verified });
         dispatch(chatActions.serverEvent({ type: "done", turn }));
         appendTurn(queryClient, sessionId, turn);
         dispatch(chatActions.clearStream());

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { toCitations, toImages } from "@/features/chat/hooks/useChatStream";
+import { buildAnswerSteps } from "@/features/chat/lib/procedure";
 import type { WireImage, WireSource } from "@/features/chat/streamEvents";
 import type { ClarifyRequest, Conversation, NotCoveredInfo, Resolution, Turn } from "@/types/contracts";
 
@@ -28,7 +29,7 @@ const toTurn = (t: WireTurn): Turn => {
     turnId: t.turn_id,
     role: t.role,
     text: t.text,
-    steps: answered ? [{ n: 1, text: t.text, sourceChunkIds: citations.map((c) => c.chunkId) }] : [],
+    steps: answered ? buildAnswerSteps(t.text, citations) : [],
     citations: t.role === "agent" ? citations : [],
     images: t.role === "agent" ? toImages(t.images ?? []) : [],
     gateOutcome: t.role === "agent" ? t.gate_outcome : null,
