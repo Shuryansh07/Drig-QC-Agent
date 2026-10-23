@@ -46,7 +46,16 @@ export const matchChunks = async ({
        p_boost_model     => $6,
        p_boost_language  => $7,
        p_source_types    => $8)`,
-    [orgId, toVectorLiteral(queryEmbedding), queryText, matchCount, boostVendor, boostModel, boostLanguage, sourceTypes]
+    [
+      orgId,
+      toVectorLiteral(queryEmbedding),
+      queryText,
+      matchCount,
+      boostVendor,
+      boostModel,
+      boostLanguage,
+      sourceTypes,
+    ],
   );
 
   return rows.map((r) => ({
@@ -73,14 +82,14 @@ export interface MatchedCallCard {
 export const matchCallCards = async (
   orgId: string,
   symptomEmbedding: number[],
-  matchCount = 5
+  matchCount = 5,
 ): Promise<MatchedCallCard[]> => {
   const { rows } = await pool.query(
     `select * from match_call_cards(
        p_org_id            => $1,
        p_symptom_embedding => $2::extensions.vector,
        p_match_count       => $3)`,
-    [orgId, toVectorLiteral(symptomEmbedding), matchCount]
+    [orgId, toVectorLiteral(symptomEmbedding), matchCount],
   );
 
   return rows.map((r) => ({
@@ -123,11 +132,11 @@ export const lookupWiring = async (
   model: string,
   year: number,
   circuit: "12v" | "ignition" | null = null,
-  startType: "pts" | "key" | null = null
+  startType: "pts" | "key" | null = null,
 ): Promise<WiringLookupResult[]> => {
   const { rows } = await pool.query(
     `select * from lookup_wiring($1, $2, $3, $4, $5, $6)`,
-    [orgId, make, model, year, circuit, startType]
+    [orgId, make, model, year, circuit, startType],
   );
 
   return rows.map((r) => ({
@@ -167,10 +176,14 @@ export interface ChunkImage {
 
 // Deliberately never selects `description` — that text is model-generated
 // and must never reach the generator as if it were fact (§6, images_for_chunks).
-export const imagesForChunks = async (chunkIds: string[]): Promise<ChunkImage[]> => {
+export const imagesForChunks = async (
+  chunkIds: string[],
+): Promise<ChunkImage[]> => {
   if (chunkIds.length === 0) return [];
 
-  const { rows } = await pool.query(`select * from images_for_chunks($1)`, [chunkIds]);
+  const { rows } = await pool.query(`select * from images_for_chunks($1)`, [
+    chunkIds,
+  ]);
 
   return rows.map((r) => ({
     imageId: r.image_id,
