@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  ChevronDown,
-  ChevronRight,
   CloudDownload,
   LoaderCircle,
   ScanSearch,
@@ -17,8 +15,7 @@ import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { useDriveSyncStatus } from "../api/queries";
 import { useScanDrive, useStopDriveSync, useSyncDrive } from "../api/mutations";
-import type { DriveSyncRun, DriveSyncStatus } from "../types";
-import { DriveSyncFileList } from "./DriveSyncFileList";
+import type { DriveSyncStatus } from "../types";
 
 const PHASE: Record<DriveSyncStatus["phase"], string> = {
   idle: "Idle",
@@ -35,18 +32,13 @@ const errorMessage = (err: unknown): string =>
 
 const n = (value: number) => value.toLocaleString();
 
-interface DriveSyncPanelProps {
-  /** Jumps the document list to a synced file, to follow its processing there. */
-  onShowDocument: (name: string) => void;
-}
-
 /**
  * Imports manuals from the shared Google Drive folder the backend is pointed
  * at. "Check folder" only counts (nothing is downloaded); "Sync now" downloads
  * the new or changed files and queues them like uploads. Progress comes from
  * polling GET /api/documents/sync-drive while either is running.
  */
-export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
+export function DriveSyncPanel() {
   const queryClient = useQueryClient();
   const { data: status, error } = useDriveSyncStatus();
   const sync = useSyncDrive();
@@ -100,6 +92,8 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
       onError: (err) => toast.error(errorMessage(err)),
     });
   const lastScan = status.last_scan;
+  // Only a sync that is running right now is shown; finished syncs are not listed.
+  const liveRun = status.runs.find((run) => run.finished_at === null);
 
   return (
     <section
@@ -182,19 +176,24 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
         </p>
       ) : null}
 
-      {status.runs.length > 0 ? (
-        <div className="space-y-2">
-          <h3 className="text-micro text-muted-foreground font-medium">
-            Recent syncs
-          </h3>
-          {status.runs.map((run, i) => (
-            <DriveSyncRunItem
-              key={run.id}
-              run={run}
-              defaultOpen={i === 0}
-              onShowDocument={onShowDocument}
-            />
-          ))}
+      {liveRun ? (
+        <div className="space-y-2" role="status">
+          <p className="text-micro text-muted-foreground">
+            {n(liveRun.processed)} of {n(liveRun.total)} files ·{" "}
+            {n(liveRun.queued)} sent · {n(liveRun.duplicates)} already imported ·{" "}
+            <span className={liveRun.failed > 0 ? "text-destructive" : undefined}>
+              {n(liveRun.failed)} failed
+            </span>
+            {liveRun.current ? ` · now: ${liveRun.current}` : ""}
+          </p>
+          <Progress
+            value={
+              liveRun.total > 0
+                ? Math.round((liveRun.processed / liveRun.total) * 100)
+                : 0
+            }
+            aria-label="Drive sync progress"
+          />
         </div>
       ) : null}
 
@@ -264,65 +263,5 @@ export function DriveSyncPanel({ onShowDocument }: DriveSyncPanelProps) {
         </p>
       ) : null}
     </section>
-  );
-}
-
-interface DriveSyncRunItemProps {
-  run: DriveSyncRun;
-  defaultOpen: boolean;
-  onShowDocument: (name: string) => void;
-}
-
-/** One sync in the history: when, how it was started, its counts, and (opened) every file it took on. */
-function DriveSyncRunItem({
-  run,
-  defaultOpen,
-  onShowDocument,
-}: DriveSyncRunItemProps) {
-  const [open, setOpen] = useState(defaultOpen);
-  const running = run.finished_at === null;
-  const percent =
-    run.total > 0 ? Math.round((run.processed / run.total) * 100) : 0;
-  const Chevron = open ? ChevronDown : ChevronRight;
-
-  return (
-    <div className="border-border space-y-2 rounded-lg border p-3">
-      <button
-        type="button"
-        className="flex w-full items-start gap-2 text-left"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        <Chevron
-          className="text-muted-foreground mt-0.5 size-4 shrink-0"
-          aria-hidden
-        />
-        <div className="min-w-0 flex-1">
-          <p className="text-micro font-medium">
-            Sync Â· 
-            {new Date(run.started_at).toLocaleString()}
-            {running ? " Â· in progress" : run.stopped ? " Â· stopped" : ""}
-          </p>
-          <p className="text-micro text-muted-foreground">
-            {n(run.processed)} of {n(run.total)} files Â· {n(run.queued)} sent Â·{" "}
-            {n(run.duplicates)} already imported Â·{" "}
-            <span className={run.failed > 0 ? "text-destructive" : undefined}>
-              {n(run.failed)} failed
-            </span>
-            {running && run.current ? ` Â· now: ${run.current}` : ""}
-          </p>
-        </div>
-      </button>
-
-      {running ? (
-        <Progress value={percent} aria-label="Drive sync progress" />
-      ) : null}
-      {run.error ? (
-        <p className="text-micro text-destructive">{run.error}</p>
-      ) : null}
-      {open ? (
-        <DriveSyncFileList files={run.files} onShowDocument={onShowDocument} />
-      ) : null}
-    </div>
   );
 }

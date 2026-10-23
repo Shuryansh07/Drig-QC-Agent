@@ -170,7 +170,7 @@ export default function AdminKnowledgeScreen() {
           ) : null}
         </section>
 
-        <DriveSyncPanel onShowDocument={handleSearchChange} />
+        <DriveSyncPanel />
 
         <section aria-label="Documents" className="space-y-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
