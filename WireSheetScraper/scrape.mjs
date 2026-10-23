@@ -3,25 +3,39 @@
 
 //   $env:WIRESHEET_PASSWORD = "<your WireSheet dealer password>"     # the scraper logs in and keeps the session
 //   # or, instead: $env:WIRESHEET_COOKIE = "<Cookie header copied from a logged-in browser>"
-//   node scrape.mjs --probe                  # check login + endpoint shapes, writes nothing
+//   WIRESHEET_DATABASE_URL (or DATABASE_URL)                         # progress + scraped data live in Postgres, not files
+//   AWS creds (default chain) + S3_WIRESHEET_BUCKET (default qc-wiresheet), S3_REGION   # photos go to S3; see .env.example
+//   node scrape.mjs --probe                  # check login + endpoint shapes, no DB/S3 needed, writes nothing
 //   node scrape.mjs --make Ford --year 2015   # one slice
-//   node scrape.mjs                           # everything (resumes where it stopped)
-//   node scrape.mjs --parse-file ../WireSheet.html   # test the parser on a saved page, offline
+//   node scrape.mjs                           # everything (resumes from the database where it stopped)
+//   node scrape.mjs --parse-file ../WireSheet.html   # test the parser on a saved page, offline (no DB/S3)
 
-// Flags: --out <dir> (default data/wiresheet)  --delay <ms> (default 1500)  --no-images
-//        --all-wires (keep every wire, not only 12V/ignition)  --dedupe (skip a key profile already fetched)
-//        --photos-only (vehicles.jsonl keeps only wires that have a photo)
+// Flags: --out <dir> (default data/wiresheet, only for --save-pages and the tracker.xlsx output)
+//        --delay <ms> (default 1500)  --no-images  --no-s3
+//        --all-wires (keep every wire, not only 12V/ignition)  --dedupe (kept for compat; resume is always on)
+//        --photos-only (store only wires that have a photo)
 //        --make <name>  --year <yyyy>  --limit <n> (stop after n cars that have a 12V/ignition photo)  --max-scan <n> (give up after looking at n cars)  --save-pages (keep each car's raw page in <out>/pages for inspection)
-//        --report (rebuild tracker.xlsx from what is already saved; no network needed)
+//        --report (rebuild tracker.xlsx from the database; signs photo links against S3)
 
-// Output (in --out): vehicles.jsonl (one line per vehicle page), images/<recnum>/<file>.jpg,
-// done.json (finished make|year|model combinations, so a rerun skips them), errors.jsonl,
-// tracker.xlsx (one sheet; a row per 12V/ignition option of each car, with description and clickable photo;
-// rebuilt every 500 cars, on Ctrl+C and at the end).
+// Storage: all progress and scraped data are rows in the database (see
+// BackEnd/db/migrations/..._wiresheet.sql) so the scraper resumes after a Fargate
+// restart with no local state —
+//   wiresheet_scrape_combo  which make/year/model combos are finished (was done.json)
+//   wiresheet_vehicle       one row per scraped vehicle, status and all (was vehicles.jsonl)
+//   wiresheet_entry         the 12V / ignition wires kept per vehicle (was vehicles.jsonl .wires)
+//   wiresheet_image(_source) photos, by content hash + source URL (was uploaded-images.json)
+// Photos themselves go to the qc-wiresheet S3 bucket (img/<sha256>.<ext>, thumb/<sha256>.jpg);
+// only the object KEY is stored in the DB, never a URL. tracker.xlsx (written to --out) is a
+// convenience rebuilt from the DB: a row per 12V/ignition option of each car, with a thumbnail
+// and a signed-URL photo link that expires after REPORT_LINK_DAYS.
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { parse } from "node-html-parser";
 import ExcelJS from "exceljs";
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadBucketCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import * as db from "./db.mjs";
 
 const BASE = "https://www.wiresheet.com";
 const argv = process.argv.slice(2);
@@ -44,6 +58,40 @@ const LIMIT = Number(opt("limit", "0"));
 const MAX_SCAN = Number(opt("max-scan", "0"));
 const SAVE_PAGES = flag("save-pages");
 const PASSWORD = process.env.WIRESHEET_PASSWORD ?? "";
+const WITH_S3 = WITH_IMAGES && !flag("no-s3");
+
+// ---------------------------------------------------------------------------
+// S3: photos go to the dedicated qc-wiresheet bucket, keyed by content hash
+// (img/<sha256>.<ext>), so the same car's photo reused across years/models is
+// uploaded once. Only the object KEY is kept (in the database, never a URL —
+// DATABASE.md: "store object keys only, never full URLs or bucket names"); the
+// tracker signs a short-lived URL from the key when it is built (see writeReport()).
+// ---------------------------------------------------------------------------
+const S3_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1";
+const S3_PREFIX = process.env.S3_WIRESHEET_PREFIX ?? ""; // the bucket is dedicated, so no prefix by default
+const S3_IMG_PREFIX = `${S3_PREFIX}img/`;
+const S3_THUMB_PREFIX = `${S3_PREFIX}thumb/`;
+const REPORT_LINK_DAYS = Number(process.env.WIRESHEET_REPORT_LINK_DAYS || "7");
+
+let s3Client;
+const s3 = () => (s3Client ??= new S3Client({ region: S3_REGION }));
+const s3Bucket = () => process.env.S3_WIRESHEET_BUCKET || "qc-wiresheet";
+
+const ensureS3 = async () => {
+  if (!WITH_S3) return;
+  await s3().send(new HeadBucketCommand({ Bucket: s3Bucket() })).catch((err) => {
+    throw new Error(`Cannot reach S3 bucket "${s3Bucket()}" (${err.message}). Check AWS creds / S3_WIRESHEET_BUCKET / S3_REGION, or pass --no-s3.`);
+  });
+};
+
+const putS3 = async (key, buffer, contentType) => {
+  await s3().send(new PutObjectCommand({ Bucket: s3Bucket(), Key: key, Body: buffer, ContentType: contentType }));
+};
+
+const getS3Buffer = async (key) => {
+  const res = await s3().send(new GetObjectCommand({ Bucket: s3Bucket(), Key: key }));
+  return Buffer.from(await res.Body.transformToByteArray());
+};
 
 // Session cookies: seeded from WIRESHEET_COOKIE if given, then kept up to date from every response.
 const jar = new Map();
@@ -249,41 +297,86 @@ const getVehiclePage = (make, year, model, key) =>
   });
 
 // ---------------------------------------------------------------------------
-// Images: the photo host is public, so no cookie is sent there
+// Images: the photo host is public, so no cookie is sent there. The original is
+// uploaded to the qc-wiresheet S3 bucket by content hash and a thumbnail next
+// to it; nothing is kept on disk. Dedup (a photo reused across years/models is
+// uploaded once) and the "URL already fetched" check both live in the database
+// now (wiresheet_image / wiresheet_image_source), so a Fargate restart resumes
+// correctly without the old uploaded-images.json file.
 // ---------------------------------------------------------------------------
 
-const downloadImage = async (url, recnum) => {
-  const file = path.join("images", recnum, path.basename(new URL(url).pathname));
-  const target = path.join(OUT, file);
+let sharpModule;
+const loadSharp = async () => {
+  if (sharpModule === undefined) sharpModule = await import("sharp").then((m) => m.default).catch(() => null);
+  return sharpModule;
+};
+
+const THUMB_WIDTH = 170;
+
+/** A small JPEG of the photo, made in memory for the thumbnail stored in S3. Null when sharp is unavailable or the bytes are not an image. */
+const makeThumb = async (buffer) => {
+  const sharp = await loadSharp();
+  if (!sharp) return null;
   try {
-    await fs.access(target);
-    return file; // already downloaded for another year/model of this profile
-  } catch {}
-  await fs.mkdir(path.dirname(target), { recursive: true });
+    const meta = await sharp(buffer).metadata();
+    const height = Math.max(40, Math.round((meta.height / meta.width) * THUMB_WIDTH));
+    return { buffer: await sharp(buffer).resize({ width: THUMB_WIDTH }).jpeg({ quality: 70 }).toBuffer(), width: THUMB_WIDTH, height };
+  } catch {
+    return null; // not a readable image
+  }
+};
+
+/** Content type from the file extension in the URL; S3 wants one and Wiresheet's own URLs don't send one back reliably. */
+const contentTypeOf = (ext) => ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" }[ext] ?? "application/octet-stream");
+
+/**
+ * Downloads one photo, uploads the original (and a thumbnail) to the qc-wiresheet
+ * bucket keyed by content hash, and records it in the database — skipping the
+ * upload when that hash, or that exact source URL, is already stored. Returns the
+ * image row ({ imageId, s3Key, thumbKey, contentHash, width, height }) a wire links to.
+ */
+const downloadAndStoreImage = async (url) => {
+  if (!WITH_S3) return null;
+
+  const bySourceUrl = await db.imageBySourceUrl(url);
+  if (bySourceUrl) return bySourceUrl;
+
+  let buffer;
   for (let attempt = 0; attempt < 3; attempt++) {
     await sleep(Math.max(300, DELAY_MS / 3));
     const res = await fetch(url, { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(30_000) }).catch(() => null);
     if (res?.ok) {
-      await fs.writeFile(target, Buffer.from(await res.arrayBuffer()));
-      return file;
+      buffer = Buffer.from(await res.arrayBuffer());
+      break;
     }
     if (res && res.status < 500 && res.status !== 429) break; // 404 and the like will not get better
   }
-  return null;
+  if (!buffer) return null;
+
+  const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+  const byHash = await db.imageByHash(hash);
+  if (byHash) {
+    await db.mapSourceUrl(url, byHash.imageId); // same bytes under a new URL: link, do not re-upload
+    return byHash;
+  }
+
+  const ext = (path.extname(new URL(url).pathname).slice(1) || "jpg").toLowerCase();
+  const s3Key = `${S3_IMG_PREFIX}${hash}.${ext}`;
+  await putS3(s3Key, buffer, contentTypeOf(ext));
+
+  const thumb = await makeThumb(buffer);
+  let thumbKey = null;
+  if (thumb) {
+    thumbKey = `${S3_THUMB_PREFIX}${hash}.jpg`;
+    await putS3(thumbKey, thumb.buffer, "image/jpeg");
+  }
+
+  return db.insertImage({ contentHash: hash, s3Key, thumbKey, width: thumb?.width ?? null, height: thumb?.height ?? null, sourceUrl: url });
 };
 
 // ---------------------------------------------------------------------------
 // The crawl
 // ---------------------------------------------------------------------------
-
-const readJson = async (file, fallback) => {
-  try {
-    return JSON.parse(await fs.readFile(file, "utf8"));
-  } catch {
-    return fallback;
-  }
-};
-const appendLine = (file, value) => fs.appendFile(file, `${JSON.stringify(value)}\n`);
 
 const ensureAuth = async () => {
   if (PASSWORD) return login();
@@ -332,56 +425,59 @@ ${raw.slice(0, 300)}`);
 const IS_12V = (w) => IS_12V_WIRE.test(w.function);
 const IS_IGNITION = (w) => IS_IGNITION_WIRE.test(w.function);
 
+/** 12v / ignition / other — the circuit column stored for each kept wire. */
+const circuitOf = (w) => (IS_12V(w) ? "12v" : IS_IGNITION(w) ? "ignition" : "other");
+
 /**
- * Every filter combination ends up as a line in vehicles.jsonl, whether or not it has data: a car with
- * wires, a car whose page has no wire table, a model with no key types, a year with no models. The
+ * Every filter combination ends up as a wiresheet_vehicle row, whether or not it has data: a car
+ * with wires, a car whose page has no wire table, a model with no key types, a year with no models.
  * `status` says which, and found12v / foundIgnition / photo12v / photoIgnition say what was there.
+ * Progress lives entirely in the database now (wiresheet_scrape_combo + wiresheet_vehicle), so a
+ * Fargate restart or the weekly run resumes exactly where the last run stopped.
  */
 const crawl = async () => {
-  await fs.mkdir(OUT, { recursive: true });
-  const doneFile = path.join(OUT, "done.json");
-  const done = new Set(await readJson(doneFile, []));
-  const vehiclesFile = path.join(OUT, "vehicles.jsonl");
-  const record = (rec) => appendLine(vehiclesFile, { ...rec, scrapedAt: new Date().toISOString() });
-
-  // Keys already recorded in an earlier run are not fetched again.
-  const recorded = new Set((await readJsonl(vehiclesFile)).filter((v) => v.recnum && v.status !== "error").map((v) => `${v.make}|${v.year}|${v.model}|${v.recnum}`));
+  const done = await db.loadDoneCombos();        // "make|year|model" keys already finished (was done.json)
+  const recorded = await db.loadRecordedKeys();  // "make|year|model|recnum" already scraped (was vehicles.jsonl)
 
   let pages = 0; // vehicle pages fetched in this run
   let withPhoto = 0; // of those, pages with at least one 12V/ignition photo
   let imagesSaved = 0;
 
   const makes = (await getMakes()).filter((m) => !ONLY_MAKE || m.toLowerCase() === ONLY_MAKE.toLowerCase());
-  console.log(`${makes.length} make(s) to go through. Output: ${OUT}`);
+  console.log(`${makes.length} make(s) to go through. Progress in database (org "${process.env.WIRESHEET_ORG_NAME || "DRIG USA"}").`);
 
   // Marks an empty level (no years / no models) once, so a rerun does not log it again.
-  const noteEmpty = async (id, rec) => {
+  const noteEmpty = async (make, year, model, state) => {
+    const id = `${make}|${year ?? "-"}|${model ?? "-"}`;
     if (done.has(id)) return;
-    await record(rec);
+    await db.markCombo(make, year, model, state);
     done.add(id);
-    await fs.writeFile(doneFile, JSON.stringify([...done]));
   };
 
   for (const make of makes) {
     const allYears = await getYears(make);
-    if (allYears.length === 0) await noteEmpty(`${make}|-|-`, { make, status: "no years" });
+    if (allYears.length === 0) await noteEmpty(make, null, null, "no_years");
     const years = allYears.filter((y) => !ONLY_YEAR || y === ONLY_YEAR);
 
     for (const year of years) {
       const models = await getModels(make, year);
-      if (models.length === 0) await noteEmpty(`${make}|${year}|-`, { make, year, status: "no models" });
+      if (models.length === 0) await noteEmpty(make, year, null, "no_models");
 
       for (const model of models) {
         const combo = `${make}|${year}|${model}`;
         if (done.has(combo)) continue;
 
         const keys = await getKeys(make, year, model);
-        if (keys.length === 0) await record({ make, year, model, status: "no key types" });
+        if (keys.length === 0) {
+          await db.recordVehicle({ make, year, model, status: "no key types" });
+          await noteEmpty(make, year, model, "no_keys");
+          continue;
+        }
 
         let comboOk = true;
         for (const key of keys) {
           const id = `${make}|${year}|${model}|${key.recnum}`;
-          if ((DEDUPE && recorded.has(id)) || recorded.has(id)) continue;
+          if (recorded.has(id)) continue;
           try {
             const html = await getVehiclePage(make, year, model, key);
             if (SAVE_PAGES) {
@@ -394,22 +490,28 @@ const crawl = async () => {
             if (WITH_IMAGES) {
               for (const wire of mine) {
                 if (!wire.imageUrl) continue;
-                wire.imageFile = await downloadImage(wire.imageUrl, key.recnum);
-                if (wire.imageFile) imagesSaved++;
+                const stored = await downloadAndStoreImage(wire.imageUrl);
+                if (stored) {
+                  wire.imageId = stored.imageId;
+                  wire.imageS3Key = stored.s3Key;
+                  wire.imageContentHash = stored.contentHash;
+                  imagesSaved++;
+                }
               }
             }
-            const hasPhoto = (w) => Boolean(WITH_IMAGES ? w.imageFile : w.imageUrl);
+            for (const wire of mine) wire.circuit = circuitOf(wire);
+            const hasPhoto = (w) => Boolean(WITH_IMAGES ? w.imageS3Key : w.imageUrl);
             const flags = {
               found12v: mine.some(IS_12V),
               photo12v: mine.some((w) => IS_12V(w) && hasPhoto(w)),
               foundIgnition: mine.some(IS_IGNITION),
               photoIgnition: mine.some((w) => IS_IGNITION(w) && hasPhoto(w)),
             };
-            await record({
+            await db.recordVehicle({
               make, year, model, keyType: key.keyType, recnum: key.recnum, title: parseTitle(html),
               status: found.length === 0 ? "no wire table" : "ok",
               ...flags,
-              // --photos-only drops the wires that have no photo from the Wires sheet (the vehicle row stays).
+              // --photos-only drops the wires that have no photo from the stored wires (the vehicle row stays).
               wires: PHOTOS_ONLY ? mine.filter(hasPhoto) : mine,
             });
             recorded.add(id);
@@ -417,12 +519,10 @@ const crawl = async () => {
             if (flags.photo12v || flags.photoIgnition) withPhoto++;
 
             if (pages % 25 === 0) console.log(`  ${pages} cars looked at, ${withPhoto} with a 12V/ignition photo, ${imagesSaved} images  (now: ${combo})`);
-            if (pages % 500 === 0) await writeReport();
           } catch (err) {
             if (err instanceof LoginError) throw err;
             comboOk = false;
-            await record({ make, year, model, keyType: key.keyType, recnum: key.recnum, status: "error", problem: err.message });
-            await appendLine(path.join(OUT, "errors.jsonl"), { make, year, model, key, problem: err.message });
+            await db.recordVehicle({ make, year, model, keyType: key.keyType, recnum: key.recnum, status: "error", problem: err.message });
             console.warn(`  failed ${combo} / ${key.keyType}: ${err.message}`);
           }
           if (LIMIT && withPhoto >= LIMIT) {
@@ -435,8 +535,8 @@ const crawl = async () => {
           }
         }
         if (comboOk) {
+          await db.markCombo(make, year, model, "done");
           done.add(combo);
-          await fs.writeFile(doneFile, JSON.stringify([...done]));
         }
       }
     }
@@ -455,28 +555,19 @@ const saveOnInterrupt = () =>
 
 
 // ---------------------------------------------------------------------------
-// Excel tracker: always rebuilt from vehicles.jsonl + errors.jsonl, so it can never drift from the data
+// Excel tracker: always rebuilt from the database, so it can never drift from
+// the data. Thumbnails are pulled from the qc-wiresheet bucket by their key.
 // ---------------------------------------------------------------------------
-
-const readJsonl = async (file) => {
-  try {
-    return (await fs.readFile(file, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  } catch {
-    return [];
-  }
-};
 
 const THIN = { style: "thin", color: { argb: "FF999999" } };
 const MEDIUM = { style: "medium", color: { argb: "FF1F4E78" } };
 const FILL = (argb) => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
 
-const THUMB_WIDTH = 170;
-
 /** The same circuit is often listed under several sections (Remote Start, Security): show each option once. */
 const uniqueOptions = (wires) => {
   const seen = new Set();
   return wires.filter((w) => {
-    const key = [w.function, w.color, w.polarity, w.location, w.imageFile ?? w.imageUrl ?? ""].join("|");
+    const key = [w.function, w.color, w.polarity, w.location, w.imageContentHash ?? ""].join("|");
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -486,29 +577,28 @@ const uniqueOptions = (wires) => {
 /** "OBD 12 Volts: Violet/Red (+) OBD-Data Link Connector, pin 16 (10A)". */
 const describeOption = (w) => `${w.function}: ${[w.color, w.polarity, w.location].filter((part) => part && part.toLowerCase() !== "null").join(" ")}${w.notes ? ` (${w.notes})` : ""}`;
 
-let sharpModule;
-const loadSharp = async () => {
-  if (sharpModule === undefined) sharpModule = await import("sharp").then((m) => m.default).catch(() => null);
-  return sharpModule;
-};
-
-/** A small JPEG of a saved photo, so thousands of photos do not make the workbook huge. */
-const thumbnailOf = async (file, cache) => {
-  if (cache.has(file)) return cache.get(file);
+/** The stored thumbnail, fetched from the qc-wiresheet bucket by its key. Null when there is none or S3 can't be reached — the row falls back to a text link. */
+const thumbBufferOf = async (option, cache) => {
+  if (!option.imageThumbKey) return null;
+  if (cache.has(option.imageThumbKey)) return cache.get(option.imageThumbKey);
   let result = null;
   try {
-    const sharp = await loadSharp();
-    if (sharp) {
-      const meta = await sharp(file).metadata();
-      const width = THUMB_WIDTH;
-      const height = Math.max(40, Math.round((meta.height / meta.width) * width));
-      result = { buffer: await sharp(file).resize({ width }).jpeg({ quality: 70 }).toBuffer(), width, height };
-    }
+    result = { buffer: await getS3Buffer(option.imageThumbKey), width: option.imageWidth ?? THUMB_WIDTH, height: option.imageHeight ?? THUMB_WIDTH };
   } catch {
-    result = null; // a missing or unreadable photo: the row says so instead
+    result = null;
   }
-  cache.set(file, result);
+  cache.set(option.imageThumbKey, result);
   return result;
+};
+
+/** A signed link to the original in S3, valid for REPORT_LINK_DAYS. Null when S3 isn't configured or signing fails. */
+const signedUrlFor = async (s3Key) => {
+  if (!s3Key) return null;
+  try {
+    return await getSignedUrl(s3(), new GetObjectCommand({ Bucket: s3Bucket(), Key: s3Key }), { expiresIn: REPORT_LINK_DAYS * 86_400 });
+  } catch {
+    return null;
+  }
 };
 
 /**
@@ -521,12 +611,7 @@ const thumbnailOf = async (file, cache) => {
  */
 export const writeReport = async () => {
   await fs.mkdir(OUT, { recursive: true });
-  // A rerun can log the same car again (after an error): the last line for a car wins.
-  const latest = new Map();
-  for (const v of await readJsonl(path.join(OUT, "vehicles.jsonl"))) {
-    if (!v.model) continue; // "no years" / "no models": nothing to list
-    latest.set([v.make, v.year, v.model, v.recnum ?? v.status].join("|"), v);
-  }
+  const latest = (await db.loadReportRecords()).filter((v) => v.model); // "no years" / "no models" rows have nothing to list
 
   const wb = new ExcelJS.Workbook();
   const sheet = wb.addWorksheet("Vehicles");
@@ -535,7 +620,7 @@ export const writeReport = async () => {
   const thumbs = new Map();
   const imageIds = new Map();
 
-  for (const v of latest.values()) {
+  for (const v of latest) {
     const wires = v.wires ?? [];
     const errored = v.status === "error";
     const read = v.status === "ok";
@@ -543,7 +628,7 @@ export const writeReport = async () => {
     const ignition = uniqueOptions(wires.filter((w) => IS_IGNITION_WIRE.test(w.function)));
     // Each row's 12V / Ignition cell describes that row's own option: "Found" only when the site has a photo
     // for it, "Not found on site" for a described wire without one. A row with no option on that side is blank.
-    const hasPhoto = (w) => Boolean(w.imageFile || w.imageUrl);
+    const hasPhoto = (w) => Boolean(w.imageS3Key || w.imageUrl);
     const labelFor = (option, i) =>
       errored ? "Error" : !read ? "Not found on site" : option ? (hasPhoto(option) ? "Found" : "Not found on site") : i === 0 ? "Not found on site" : "";
 
@@ -567,29 +652,30 @@ export const writeReport = async () => {
         if (col <= 4) cell.font = { bold: true };
       });
 
-      // The photo of each option: a thumbnail that opens the full-size file when clicked.
+      // The photo of each option: a thumbnail that opens a signed S3 link (expires after REPORT_LINK_DAYS) when clicked.
       let tallest = 0;
+      const linkOf = new Map(); // content hash -> signed URL, so one photo shown on several rows is only signed once
       for (const [slot, option] of options.entries()) {
         if (!option) continue;
         const col = slot === 0 ? 8 : 10;
-        if (!option.imageFile) {
+        if (!option.imageS3Key) {
           if (option.imageUrl) row.getCell(col).value = "photo not saved";
           continue;
         }
-        const full = path.join(OUT, option.imageFile);
-        const thumb = await thumbnailOf(full, thumbs);
-        const link = option.imageFile.replaceAll("\\", "/");
+        if (!linkOf.has(option.imageContentHash)) linkOf.set(option.imageContentHash, await signedUrlFor(option.imageS3Key));
+        const link = linkOf.get(option.imageContentHash);
+        const thumb = await thumbBufferOf(option, thumbs);
         if (!thumb) {
-          row.getCell(col).value = { text: "Open photo", hyperlink: link };
-          row.getCell(col).font = { color: { argb: "FF0563C1" }, underline: true };
+          row.getCell(col).value = link ? { text: "Open photo", hyperlink: link } : "photo in S3 (configure S3 to sign a link)";
+          if (link) row.getCell(col).font = { color: { argb: "FF0563C1" }, underline: true };
           continue;
         }
-        if (!imageIds.has(full)) imageIds.set(full, wb.addImage({ buffer: thumb.buffer, extension: "jpeg" }));
-        sheet.addImage(imageIds.get(full), {
+        if (!imageIds.has(option.imageContentHash)) imageIds.set(option.imageContentHash, wb.addImage({ buffer: thumb.buffer, extension: "jpeg" }));
+        sheet.addImage(imageIds.get(option.imageContentHash), {
           tl: { col: col - 1 + 0.04, row: row.number - 1 + 0.04 },
           ext: { width: thumb.width, height: thumb.height },
           editAs: "oneCell",
-          hyperlinks: { hyperlink: link, tooltip: "Open the full-size photo" },
+          ...(link && { hyperlinks: { hyperlink: link, tooltip: "Open the full-size photo (link expires)" } }),
         });
         tallest = Math.max(tallest, thumb.height);
       }
@@ -598,8 +684,9 @@ export const writeReport = async () => {
 
       // "Found" opens this row's own photo.
       for (const [col, option] of [[5, twelve[i]], [6, ignition[i]]]) {
-        if (option?.imageFile && row.getCell(col).value === "Found") {
-          row.getCell(col).value = { text: "Found", hyperlink: option.imageFile.replaceAll("\\", "/") };
+        const link = option?.imageContentHash ? linkOf.get(option.imageContentHash) : null;
+        if (link && row.getCell(col).value === "Found") {
+          row.getCell(col).value = { text: "Found", hyperlink: link };
           row.getCell(col).font = { color: { argb: "FF0563C1" }, underline: true, bold: true };
         }
       }
@@ -641,11 +728,19 @@ const main = async () => {
     return;
   }
   if (flag("report")) {
-    console.log("Wrote", await writeReport());
+    await db.connect();
+    try {
+      console.log("Wrote", await writeReport());
+    } finally {
+      await db.close();
+    }
     return;
   }
+  // probe checks the site only; the crawl needs the database for progress + the scraped data.
+  if (!flag("probe")) await db.connect();
   try {
     await ensureAuth();
+    await ensureS3();
     if (!flag("probe")) saveOnInterrupt();
     await (flag("probe") ? probe() : crawl());
     if (!flag("probe")) console.log("Tracker:", await writeReport());
@@ -655,6 +750,8 @@ const main = async () => {
       process.exit(1);
     }
     throw err;
+  } finally {
+    if (!flag("probe")) await db.close();
   }
 };
 

@@ -1,0 +1,26 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunTheScraperTask",
+      "Effect": "Allow",
+      "Action": "ecs:RunTask",
+      "Resource": "arn:aws:ecs:us-east-1:319797800920:task-definition/qc-wiresheet-scraper:*",
+      "Condition": {
+        "ArnLike": { "ecs:cluster": "arn:aws:ecs:us-east-1:319797800920:cluster/Drig-qc-agent" }
+      }
+    },
+    {
+      "Sid": "PassTaskAndExecutionRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::319797800920:role/ecs-wiresheet-task-role",
+        "arn:aws:iam::319797800920:role/ecsTaskExecutionRole"
+      ],
+      "Condition": {
+        "StringEquals": { "iam:PassedToService": "ecs-tasks.amazonaws.com" }
+      }
+    }
+  ]
+}
