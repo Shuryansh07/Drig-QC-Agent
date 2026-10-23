@@ -1,0 +1,37 @@
+{
+  "family": "qc-wiresheet-scraper",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::319797800920:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::319797800920:role/ecs-wiresheet-task-role",
+  "containerDefinitions": [
+    {
+      "name": "wiresheet-scraper",
+      "image": "319797800920.dkr.ecr.us-east-1.amazonaws.com/wiresheet-scraper:latest",
+      "essential": true,
+      "command": ["--delay", "8000"],
+      "environment": [
+        { "name": "WIRESHEET_DATABASE_URL", "value": "postgresql://drigadmin@drig-postgres.cixugsc04pqq.us-east-1.rds.amazonaws.com:5432/postgres" },
+        { "name": "DB_SECRET_ARN", "value": "arn:aws:secretsmanager:us-east-1:319797800920:secret:rds!db-c1624286-8476-432f-95b1-b5175034292f-yKipsj" },
+        { "name": "S3_WIRESHEET_BUCKET", "value": "qc-wiresheet" },
+        { "name": "S3_REGION", "value": "us-east-1" },
+        { "name": "WIRESHEET_PASSWORD", "value": "REPLACE_WITH_WIRESHEET_PASSWORD" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/qc-wiresheet-scraper",
+          "awslogs-create-group": "true",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

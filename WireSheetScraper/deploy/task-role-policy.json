@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadDbPassword",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:319797800920:secret:rds!db-c1624286-8476-432f-95b1-b5175034292f-yKipsj"
+    },
+    {
+      "Sid": "WiresheetPhotos",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::qc-wiresheet/*"
+    },
+    {
+      "Sid": "WiresheetBucketList",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::qc-wiresheet"
+    }
+  ]
+}

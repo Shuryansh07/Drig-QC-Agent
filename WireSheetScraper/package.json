@@ -1,0 +1,23 @@
+{
+  "name": "wiresheet-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Exports 12 V and ignition wires and photos from WireSheet for every make/year/model/key type (needs a subscriber session).",
+  "scripts": {
+    "probe": "node --env-file-if-exists=.env scrape.mjs --probe",
+    "scrape": "node --env-file-if-exists=.env scrape.mjs",
+    "parse-test": "node --env-file-if-exists=.env scrape.mjs --parse-file ../WireSheet.html",
+    "report": "node --env-file-if-exists=.env scrape.mjs --report",
+    "test-run": "node --env-file-if-exists=.env scrape.mjs --limit 8 --max-scan 400 --out data/test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/client-secrets-manager": "^3.1148.0",
+    "@aws-sdk/s3-request-presigner": "^3.1147.0",
+    "exceljs": "^4.4.0",
+    "node-html-parser": "^9.0.4",
+    "pg": "^8.13.1",
+    "sharp": "^0.35.5"
+  }
+}
