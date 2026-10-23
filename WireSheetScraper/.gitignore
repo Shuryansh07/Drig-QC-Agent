@@ -1,0 +1,4 @@
+node_modules/
+.env
+# Scraped WireSheet export (subscription content, not for the repo)
+data/
