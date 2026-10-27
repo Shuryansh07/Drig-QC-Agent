@@ -186,6 +186,22 @@ export interface ChunkLocation {
  * live child there, concatenated in document order, which only happens on a page/section
  * with no heading of its own (so nothing was ever grouped under a parent).
  */
+/**
+ * Each stored chunk's text begins with a synthetic "<title> › <section path>"
+ * breadcrumb line that exists only so the child embeds and keyword-matches with
+ * its location (chunker.js builds it). It is noise for a human reading the
+ * source — and on a heading-less page, where several small children get
+ * concatenated below, it would repeat before every line. Drop that first line
+ * for display; the citation drawer already shows the page and section in its
+ * header. The " › " separator only appears in that synthetic header, never in
+ * body prose, so it's a safe marker.
+ */
+const stripContextHeader = (text: string): string => {
+  const nl = text.indexOf("\n");
+  if (nl === -1) return text;
+  return text.slice(0, nl).includes(" › ") ? text.slice(nl + 1).replace(/^\n+/, "") : text;
+};
+
 export const findChunkAtLocation = async ({
   docId,
   page,
@@ -214,7 +230,7 @@ export const findChunkAtLocation = async ({
     [docId, locationValue]
   );
   if (parentRows.length > 0) {
-    return { docId, documentTitle: docRows[0].title, pageFrom: parentRows[0].page_from, sectionPath: parentRows[0].section_path, content: parentRows[0].text };
+    return { docId, documentTitle: docRows[0].title, pageFrom: parentRows[0].page_from, sectionPath: parentRows[0].section_path, content: stripContextHeader(parentRows[0].text) };
   }
 
   const { rows: childRows } = await pool.query<{ text: string; section_path: string | null; page_from: number | null }>(
@@ -230,7 +246,7 @@ export const findChunkAtLocation = async ({
     documentTitle: docRows[0].title,
     pageFrom: childRows[0].page_from,
     sectionPath: childRows[0].section_path,
-    content: childRows.map((r) => r.text).join("\n\n"),
+    content: childRows.map((r) => stripContextHeader(r.text)).join("\n\n"),
   };
 };
 

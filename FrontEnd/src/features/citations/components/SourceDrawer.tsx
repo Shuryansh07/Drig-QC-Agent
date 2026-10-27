@@ -64,7 +64,7 @@ export function SourceDrawer() {
               ) : null}
 
               {citation?.excerpt ? (
-                <blockquote className="border-primary bg-muted text-step text-answer-fg border-l-4 p-4">
+                <blockquote className="border-primary bg-muted text-step text-answer-fg border-l-4 p-4 whitespace-pre-line break-words">
                   {citation.excerpt}
                 </blockquote>
               ) : !citation?.imageUrl ? (
