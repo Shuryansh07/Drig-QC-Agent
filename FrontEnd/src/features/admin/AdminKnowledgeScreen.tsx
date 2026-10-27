@@ -1,19 +1,18 @@
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, LoaderCircle, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, LoaderCircle, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { PageShell } from "@/components/common/PageShell";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError } from "@/lib/api-client";
+import { ApiError, apiUrl, authHeaders } from "@/lib/api-client";
 import { uuid } from "@/lib/uuid";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useAdminDocuments } from "./api/queries";
 import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mutations";
 import { UploadDropzone } from "./components/UploadDropzone";
 import { DocumentRow } from "./components/DocumentRow";
-import { DriveSyncPanel } from "./components/DriveSyncPanel";
 import { MAX_UPLOAD_BYTES, kindOfFile, unsupportedFileMessage } from "./types";
 // import { uuid } from "@/lib/uuid";
 
@@ -120,6 +119,34 @@ export default function AdminKnowledgeScreen() {
   const retryingId = retry.isPending ? retry.variables : undefined;
   const deletingId = remove.isPending ? remove.variables : undefined;
 
+  // The tracker is a file download, not JSON, so it bypasses apiFetch: fetch the
+  // blob, then hand it to the browser via a temporary object URL.
+  const [downloadingTracker, setDownloadingTracker] = useState(false);
+  const handleDownloadTracker = async () => {
+    setDownloadingTracker(true);
+    try {
+      const res = await fetch(apiUrl("/wiresheet/tracker.xlsx"), { headers: { ...(await authHeaders()) } });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { message?: string };
+        throw new Error(body.message ?? `Download failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `wiresheet-tracker-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Wiresheet tracker downloaded");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setDownloadingTracker(false);
+    }
+  };
+
   return (
     <PageShell
       wide
@@ -170,7 +197,18 @@ export default function AdminKnowledgeScreen() {
           ) : null}
         </section>
 
-        <DriveSyncPanel />
+        <section aria-label="Wiresheet" className="border-border bg-card flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h2 className="text-lead font-semibold tracking-tight">Wiresheet data</h2>
+            <p className="text-micro text-muted-foreground mt-1">
+              Download every scraped vehicle&apos;s 12V and ignition wiring as an Excel tracker (one row per option, with photos).
+            </p>
+          </div>
+          <Button onClick={handleDownloadTracker} disabled={downloadingTracker} className="shrink-0">
+            {downloadingTracker ? <LoaderCircle className="animate-spin" /> : <Download />}
+            {downloadingTracker ? "Preparing…" : "Download Excel"}
+          </Button>
+        </section>
 
         <section aria-label="Documents" className="space-y-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

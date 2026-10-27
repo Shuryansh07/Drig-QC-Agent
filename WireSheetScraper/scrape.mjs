@@ -613,6 +613,22 @@ export const writeReport = async () => {
   await fs.mkdir(OUT, { recursive: true });
   const latest = (await db.loadReportRecords()).filter((v) => v.model); // "no years" / "no models" rows have nothing to list
 
+  // Excel can't reliably render more than ~1000 embedded images in one sheet — past
+  // that it shows "image cannot currently be displayed" for the overflow. When the
+  // whole dataset would exceed that, every photo becomes a clickable link instead of
+  // an embedded thumbnail (a per-make report stays small, so it keeps its thumbnails).
+  const EMBED_CAP = 1000;
+  const hasPhoto0 = (o) => Boolean(o && o.imageS3Key);
+  const photoPlacements = latest.reduce(
+    (n, v) =>
+      n +
+      uniqueOptions((v.wires ?? []).filter((w) => IS_12V_WIRE.test(w.function))).filter(hasPhoto0).length +
+      uniqueOptions((v.wires ?? []).filter((w) => IS_IGNITION_WIRE.test(w.function))).filter(hasPhoto0).length,
+    0,
+  );
+  const embedThumbs = photoPlacements <= EMBED_CAP;
+  if (!embedThumbs) console.log(`  ${photoPlacements} photos is too many to embed in one sheet (Excel limit ~${EMBED_CAP}); using clickable photo links instead.`);
+
   const wb = new ExcelJS.Workbook();
   const sheet = wb.addWorksheet("Vehicles");
   const headers = ["Make", "Year", "Model", "Key type", "12V", "Ignition", "12V option", "12V photo", "Ignition option", "Ignition photo"];
@@ -664,7 +680,7 @@ export const writeReport = async () => {
         }
         if (!linkOf.has(option.imageContentHash)) linkOf.set(option.imageContentHash, await signedUrlFor(option.imageS3Key));
         const link = linkOf.get(option.imageContentHash);
-        const thumb = await thumbBufferOf(option, thumbs);
+        const thumb = embedThumbs ? await thumbBufferOf(option, thumbs) : null;
         if (!thumb) {
           row.getCell(col).value = link ? { text: "Open photo", hyperlink: link } : "photo in S3 (configure S3 to sign a link)";
           if (link) row.getCell(col).font = { color: { argb: "FF0563C1" }, underline: true };
