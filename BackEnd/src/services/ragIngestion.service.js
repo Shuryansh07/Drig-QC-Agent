@@ -360,7 +360,7 @@ export const processDocument = async (document, { jobId } = {}) => {
  * worker. This is what lets POST /api/documents/upload return 202
  * immediately regardless of document size.
  */
-export const enqueueIngestion = async ({ filePath, fileName, source }) => {
+export const enqueueIngestion = async ({ filePath, fileName, source, collection = "general" }) => {
   const kind = kindOfFileName(fileName);
   if (!kind) {
     await deleteTempFile(filePath);
@@ -385,6 +385,13 @@ export const enqueueIngestion = async ({ filePath, fileName, source }) => {
   if (existing) {
     logger.info(`[upload] duplicate (sha256 match) -> reusing document ${existing.docId}`);
     await deleteTempFile(filePath);
+    // The same manual uploaded again as a DRIG Standard one: promote it rather than ignore the intent.
+    // Never the other way round: an ordinary upload must not quietly demote a DRIG manual.
+    if (collection === "drig" && existing.collection !== "drig") {
+      await documents.setDocumentCollection(existing.docId, "drig");
+      logger.info(`[upload] document ${existing.docId} promoted to DRIG Standard`);
+      return { documentId: existing.docId, status: existing.ingestStatus, duplicate: true, promoted: true };
+    }
     return { documentId: existing.docId, status: existing.ingestStatus, duplicate: true };
   }
 
@@ -401,7 +408,7 @@ export const enqueueIngestion = async ({ filePath, fileName, source }) => {
 
   let document;
   try {
-    document = await documents.createDocument({ title: fileName, contentHash: sha256, tempFilePath: key });
+    document = await documents.createDocument({ title: fileName, contentHash: sha256, tempFilePath: key, collection });
   } catch (err) {
     await deleteStoredFile(key);
     throw err;

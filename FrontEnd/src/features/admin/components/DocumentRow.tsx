@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileText, LoaderCircle, RotateCw, Trash2, TriangleAlert } from "lucide-react";
+import { ArrowDownToLine, FileText, LoaderCircle, RotateCw, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,9 +39,13 @@ interface DocumentRowProps {
   retrying: boolean;
   onDelete: (documentId: string) => Promise<unknown>;
   deleting: boolean;
+  /** Moves the manual into (or out of) the DRIG Standard manuals. */
+  onSetCollection: (documentId: string, collection: AdminDocument["collection"]) => void;
+  movingCollection: boolean;
 }
 
-export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleting }: DocumentRowProps) {
+export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleting, onSetCollection, movingCollection }: DocumentRowProps) {
+  const isDrig = doc.collection === "drig";
   const [confirmOpen, setConfirmOpen] = useState(false);
   const status = STATUS[doc.status];
   const inFlight = isInFlight(doc.status);
@@ -66,9 +70,17 @@ export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleti
           {/* Stacked on a phone so a long status label can't squeeze the title into a sliver. */}
           <div className="flex flex-col items-start gap-2 sm:flex-row sm:justify-between sm:gap-3">
             <p className="text-body min-w-0 font-medium break-words">{doc.title}</p>
-            <Badge variant={status.variant} className="text-micro shrink-0">
-              {status.label}
-            </Badge>
+            <div className="flex shrink-0 flex-wrap gap-1.5">
+              {isDrig ? (
+                <Badge variant="outline" className="text-micro">
+                  <ShieldCheck aria-hidden />
+                  DRIG Standard
+                </Badge>
+              ) : null}
+              <Badge variant={status.variant} className="text-micro">
+                {status.label}
+              </Badge>
+            </div>
           </div>
 
           <p className="text-micro text-muted-foreground">{details.join(" · ")}</p>
@@ -108,6 +120,17 @@ export function DocumentRow({ document: doc, onRetry, retrying, onDelete, deleti
                 <Button variant="outline" size="sm" disabled={retrying} onClick={() => onRetry(doc.document_id)}>
                   <RotateCw className={retrying ? "animate-spin" : undefined} />
                   Retry
+                </Button>
+              ) : null}
+              {!inFlight ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={movingCollection}
+                  onClick={() => onSetCollection(doc.document_id, isDrig ? "general" : "drig")}
+                >
+                  {movingCollection ? <LoaderCircle className="animate-spin" /> : isDrig ? <ArrowDownToLine /> : <ShieldCheck />}
+                  {isDrig ? "Move to other manuals" : "Make DRIG Standard"}
                 </Button>
               ) : null}
               {/* Not while the worker is on it: deleting under it would leave it half-processed. */}

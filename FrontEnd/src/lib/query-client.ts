@@ -22,6 +22,8 @@ export const queryKeys = {
   // No `page` invalidates every page (and every search) at once (React Query's default
   // prefix match) — mutations (upload/retry/delete) rely on that to refresh whatever's open.
   driveSync: () => ["admin", "drive-sync"] as const,
-  adminDocuments: (page?: number, search?: string) =>
-    page === undefined ? (["admin", "documents"] as const) : (["admin", "documents", page, search ?? ""] as const),
+  adminDocuments: (page?: number, search?: string, collection?: string) =>
+    page === undefined ? (["admin", "documents"] as const) : (["admin", "documents", page, search ?? "", collection ?? "all"] as const),
+  wiringImports: () => ["admin", "wiring-imports"] as const,
+  vehicleOptions: (make?: string) => ["wiring", "vehicle-options", make ?? ""] as const,
 } as const;

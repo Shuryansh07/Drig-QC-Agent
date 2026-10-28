@@ -1,6 +1,7 @@
 import { getConversation, setResolution, isUuid } from "../db/chat.js";
 import { recordResolution } from "../services/faq.service.js";
 import * as storage from "../services/storage.service.js";
+import { signUrl, BUCKET_IDS } from "../services/wiring/wiringBuckets.js";
 import { logger } from "../utils/logger.js";
 
 const RESOLUTIONS = new Set(["resolved", "partly", "not_resolved"]);
@@ -11,9 +12,15 @@ const toWire = async (turn) => {
   const images = await Promise.all(
     (json.images ?? []).map(async (img) => {
       try {
+        // A wiring answer's photo names its bucket (DRIG wiring guide or Wiresheet); a manual figure is in the KB bucket.
+        if (img.bucket && BUCKET_IDS.has(img.bucket) && img.key) {
+          const url = await signUrl(img.bucket, img.key);
+          const href = img.hrefKey && img.hrefKey !== img.key ? await signUrl(img.bucket, img.hrefKey, { downloadName: img.downloadName }) : url;
+          return { label: img.label, document_id: null, page: null, url, href };
+        }
         return { label: img.label, document_id: img.docId, page: img.page, url: await storage.getPresignedUrl(img.s3Key) };
       } catch (err) {
-        logger.warn(`[chat] could not sign evidence image ${img.s3Key}: ${err.message}`);
+        logger.warn(`[chat] could not sign evidence image ${img.s3Key ?? img.key}: ${err.message}`);
         return null;
       }
     })

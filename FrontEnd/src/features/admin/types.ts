@@ -15,9 +15,13 @@ export type IngestStatus =
   | "completed_with_errors"
   | "failed";
 
+/** "drig" = a DRIG Standard manual: the assistant searches these first, before every other manual. */
+export type DocumentCollection = "general" | "drig";
+
 export interface AdminDocument {
   document_id: string;
   title: string;
+  collection: DocumentCollection;
   status: IngestStatus;
   total_pages: number | null;
   processed_pages: number | null;
@@ -50,8 +54,58 @@ export interface UploadResponse {
   job_id?: string;
   status: IngestStatus;
   duplicate?: boolean;
+  /** The identical file was already an ordinary manual and has now been made a DRIG Standard one. */
+  promoted?: boolean;
   message?: string;
 }
+
+export type WiringImportStatus = "queued" | "processing" | "completed" | "completed_with_errors" | "failed";
+
+/** GET /api/wiring/imports (BackEnd/src/controllers/wiring.controller.js). */
+export interface WiringImport {
+  import_id: string;
+  file_name: string;
+  status: WiringImportStatus;
+  /** parsing | fetching links | publishing | reading photos — while processing. */
+  stage: string | null;
+  /** Progress and outcome counters; any may be missing before its stage runs. */
+  counts: Partial<Record<
+    | "vehicles"
+    | "placeholder_rows"
+    | "cells_text"
+    | "cells_link"
+    | "cells_empty"
+    | "links_total"
+    | "links_done"
+    | "links_stored"
+    | "links_requires_login"
+    | "links_unsupported"
+    | "links_failed"
+    | "ocr_total"
+    | "ocr_done"
+    | "ocr_no_text"
+    | "ocr_failed",
+    number
+  >>;
+  error: string | null;
+  /** The guide the chat answers from right now. */
+  is_live: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface WiringImportUploadResponse {
+  import: WiringImport;
+  duplicate?: boolean;
+  job_id?: string;
+  message?: string;
+}
+
+export const isImportInFlight = (status: WiringImportStatus): boolean => status === "queued" || status === "processing";
+
+/** Must match the backend's DRIG_WIRING_MAX_UPLOAD_BYTES default (wiring.routes.js). */
+export const MAX_WIRING_GUIDE_BYTES = 25 * 1024 * 1024;
 
 export interface DriveTypeCount {
   total: number;

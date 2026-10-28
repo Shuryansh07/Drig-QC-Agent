@@ -8,13 +8,27 @@ const ACCEPT = ACCEPTED_FILE_TYPES.join(",");
 interface UploadDropzoneProps {
   onFiles: (files: File[]) => void;
   disabled?: boolean;
+  /** File chooser filter; defaults to the manual types. */
+  accept?: string;
+  multiple?: boolean;
+  title?: string;
+  hint?: string;
+  buttonLabel?: string;
 }
 
 /**
  * Drag-and-drop or click-to-choose. Validation (type, size) lives with the
  * caller so a rejected file can be reported next to the ones that were accepted.
  */
-export function UploadDropzone({ onFiles, disabled = false }: UploadDropzoneProps) {
+export function UploadDropzone({
+  onFiles,
+  disabled = false,
+  accept = ACCEPT,
+  multiple = true,
+  title = "Drop PDF, Word or image files here",
+  hint = "PDF, Word (.docx), JPG or PNG, up to 500 MB each. Scanned pages without a text layer can't be read.",
+  buttonLabel = "Choose files",
+}: UploadDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -22,7 +36,8 @@ export function UploadDropzone({ onFiles, disabled = false }: UploadDropzoneProp
     event.preventDefault();
     setDragging(false);
     if (disabled) return;
-    const files = Array.from(event.dataTransfer.files);
+    const dropped = Array.from(event.dataTransfer.files);
+    const files = multiple ? dropped : dropped.slice(0, 1);
     if (files.length > 0) onFiles(files);
   };
 
@@ -43,17 +58,15 @@ export function UploadDropzone({ onFiles, disabled = false }: UploadDropzoneProp
       <CloudUpload className="text-muted-foreground size-9" aria-hidden />
 
       <div className="space-y-1">
-        <p className="text-body font-medium">Drop PDF, Word or image files here</p>
-        <p className="text-micro text-muted-foreground">
-          PDF, Word (.docx), JPG or PNG, up to 500 MB each. Scanned pages without a text layer can&apos;t be read.
-        </p>
+        <p className="text-body font-medium">{title}</p>
+        <p className="text-micro text-muted-foreground">{hint}</p>
       </div>
 
       <input
         ref={inputRef}
         type="file"
-        accept={ACCEPT}
-        multiple
+        accept={accept}
+        multiple={multiple}
         hidden
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
@@ -69,7 +82,7 @@ export function UploadDropzone({ onFiles, disabled = false }: UploadDropzoneProp
         onClick={() => inputRef.current?.click()}
         className="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring/50 inline-flex h-11 items-center justify-center rounded-md px-5 text-sm font-medium outline-none focus-visible:ring-[3px] disabled:pointer-events-none disabled:opacity-50"
       >
-        Choose files
+        {buttonLabel}
       </button>
     </div>
   );

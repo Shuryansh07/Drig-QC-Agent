@@ -71,8 +71,11 @@ export interface AnswerImage {
   label: string;
   /** Time-limited (the backend signs it for an hour) — re-fetch the turn rather than cache this past a session. */
   url: string;
+  /** What tapping the picture opens: the full-size original (or the PDF a preview was made from). Defaults to `url`. */
+  href?: string;
   page: number | null;
-  documentId: string;
+  /** Null for a wiring-guide or Wiresheet photo, which belongs to no manual. */
+  documentId: string | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -100,11 +103,22 @@ export interface ClarifyOption {
   hint?: string;
 }
 
+/** What the server already understood about the vehicle in a wiring question (slot "vehicle"). */
+export interface ClarifyVehicle {
+  year: number | null;
+  make: string | null;
+  model: string | null;
+  startType: StartType | null;
+}
+
 export interface ClarifyRequest {
   slot: string;
   question: string;
   options: ClarifyOption[];
   allowSkip: boolean;
+  /** slot "vehicle" only: a wiring lookup needs the year, make, model and start type. */
+  vehicle?: ClarifyVehicle;
+  missing?: ("year" | "make" | "model" | "startType")[];
 }
 
 export interface NotCoveredInfo {

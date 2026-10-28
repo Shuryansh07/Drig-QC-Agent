@@ -16,6 +16,11 @@ import { saveTurn, isUuid } from "../db/chat.js";
 import { markFaqUsed } from "../db/faq.js";
 import { getDeadlineMs, getContextMaxTurns, getClarifyEnabled, getClarifySimilarityGap, getClarifyMinOptions, getClarifyMaxOptions } from "../db/settings.js";
 import { logger } from "../utils/logger.js";
+import { generateEmbedding } from "../services/embedding.service.js";
+import { detectWiringIntent, missingVehicleFields } from "../services/wiring/wiringIntent.service.js";
+import { lookupVehicleWiring, composeWiringAnswer } from "../services/wiring/wiringLookup.service.js";
+import { vehicleClarify } from "../services/wiring/wiringChat.service.js";
+import { describeVehicle } from "../services/wiring/vehicleNames.js";
 
 const HEARTBEAT_MS = 10_000;
 const FALLBACK_DEADLINE_MS = 22_000;
@@ -55,6 +60,69 @@ const refuse = async ({ question, retrieval }) => {
     coveredTopics: [],
     message: "I don't have documented guidance for that. I can hand this to an engineer with everything you've told me.",
   };
+};
+
+/**
+ * A vehicle wiring question, end to end, on the stream. Asks for whatever part of
+ * the vehicle is missing; otherwise looks it up (DRIG guide first, Wiresheet only
+ * for a circuit DRIG has nothing for) and sends the composed answer. No language
+ * model writes the answer, so there is nothing for Checks 5-7 to verify.
+ */
+const answerWiring = async ({ intent, question, send, persist, agentTurnId, requestStart, isClosed }) => {
+  const missing = missingVehicleFields(intent);
+  if (missing.length > 0) {
+    const clarify = vehicleClarify(intent, missing);
+    logger.info(`[rag stream] wiring question, asking for ${missing.join(", ")}`);
+    await persist(agentTurnId, { role: "agent", text: clarify.question, gateOutcome: "clarify", turnJson: { clarify } });
+    send({ type: "clarify", clarify });
+    return;
+  }
+
+  const vehicle = { year: intent.year, make: intent.make, model: intent.model, startType: intent.startType, circuits: intent.circuits };
+  const lookup = await lookupVehicleWiring(vehicle);
+  if (isClosed()) return;
+  logger.info(
+    `[rag stream] wiring lookup ${describeVehicle(vehicle)}: ` + lookup.results.map((r) => `${r.circuit}=${r.source ?? "none"}`).join(", ")
+  );
+
+  if (!lookup.anyFound) {
+    const notCovered = {
+      coveredTopics: [],
+      message: `I don't have the ${intent.circuits.map((c) => (c === "12v" ? "12V" : "ignition")).join(" or ")} wiring for the ${describeVehicle(vehicle)} in the DRIG wiring guide or Wiresheet. Call QC before tapping anything — they can check the vehicle's schematics.`,
+    };
+    // Best effort, like refuse(): the gap list is how missing vehicles reach the guide's owner.
+    generateEmbedding(question)
+      .then((embedding) => recordGap({ queryText: question, queryEmbedding: embedding, retrievedIds: [], reason: "not_covered" }))
+      .catch((err) => logger.error("[rag] failed to record wiring gap", err));
+    await persist(agentTurnId, { role: "agent", text: notCovered.message, gateOutcome: "not_covered", turnJson: { notCovered, wiring: { vehicle } } });
+    send({ type: "not_covered", notCovered });
+    return;
+  }
+
+  const { answer, images } = await composeWiringAnswer(lookup);
+  if (isClosed()) return;
+  send({ type: "sources", sources: [] });
+  if (images.length > 0) send({ type: "images", images: images.map(({ stored, ...wire }) => wire) });
+  send({ type: "delta", text: answer });
+
+  const durationMs = Date.now() - requestStart;
+  send({ type: "complete", answer, durationMs, verified: true });
+  await persist(agentTurnId, {
+    role: "agent",
+    text: answer,
+    gateOutcome: "answered",
+    turnJson: {
+      sources: [],
+      images: images.map((i) => i.stored),
+      verified: true,
+      durationMs,
+      standalone_question: question,
+      // No chunk ids: a wiring answer is a lookup, and is deliberately never copied into the FAQ.
+      source_chunk_ids: [],
+      wiring: { vehicle, sources: Object.fromEntries(lookup.results.map((r) => [r.circuit, r.source])) },
+    },
+  });
+  logger.info(`[rag stream] TOTAL request time: ${durationMs}ms (wiring)`);
 };
 
 export const queryRag = async (req, res) => {
@@ -202,6 +270,15 @@ export const streamRagQuery = async (req, res) => {
     const history = sanitizeHistory(rawHistory, await getContextMaxTurns().catch(() => 6));
     const question = await contextualizeQuestion({ question: clarifiedQuestion, history });
     if (closed) return;
+
+    // Vehicle wiring (12V / ignition) is a lookup in the DRIG wiring guide, then Wiresheet, by exact
+    // vehicle — not a document search. It needs the year, make, model and start type, so it asks first.
+    const wiringIntent = await detectWiringIntent(question);
+    if (closed) return;
+    if (wiringIntent) {
+      await answerWiring({ intent: wiringIntent, question, send, persist, agentTurnId: agent_turn_id, requestStart, isClosed: () => closed });
+      return;
+    }
 
     const retrieval = await retrieveRelevantChunks({ question });
     if (closed) return;

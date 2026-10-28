@@ -13,6 +13,7 @@ import { processDocument, pauseDocument } from "./services/ragIngestion.service.
 import { TEMP_UPLOAD_DIR } from "./middleware/upload.middleware.js";
 import { pool } from "./db/pool.js";
 import * as storage from "./services/storage.service.js";
+import { runDrigWiringImport, DRIG_WIRING_JOB } from "./services/wiring/drigWiringImport.service.js";
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const JOB_POLL_INTERVAL_MS = parseInt(process.env.JOB_POLL_INTERVAL_MS || "1000", 10);
@@ -40,6 +41,16 @@ const runJob = async (job) => {
   logger.info(`[job ${job.id}] claimed by ${WORKER_ID} (type: ${job.jobType}, document: ${job.docId}, attempt ${job.attempts}/${job.maxAttempts})`);
 
   try {
+    // DRIG's vehicle wiring guide: no document, the import id travels in the payload.
+    if (job.jobType === DRIG_WIRING_JOB) {
+      const importId = job.payload?.importId;
+      if (!importId) throw Object.assign(new Error(`Job ${job.id} has no importId`), { status: 400 });
+      const counts = await runDrigWiringImport({ importId, jobId: job.id });
+      await completeJob(job.id);
+      logger.info(`[job ${job.id}] wiring guide import ${importId} completed in ${Date.now() - start}ms (${counts.vehicles} vehicles)`);
+      return;
+    }
+
     if (job.jobType !== "process_document") {
       throw new Error(`Unknown job_type: ${job.jobType}`);
     }

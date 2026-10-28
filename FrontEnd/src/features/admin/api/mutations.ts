@@ -2,10 +2,17 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-client";
 import { logger } from "@/lib/logger";
-import type { DeleteResponse, DriveSyncStatus, RetryResponse, UploadResponse } from "../types";
+import type {
+  DeleteResponse,
+  DocumentCollection,
+  DriveSyncStatus,
+  RetryResponse,
+  UploadResponse,
+  WiringImportUploadResponse,
+} from "../types";
 
 /**
- * POST /api/documents/upload (multipart, field "file"). Returns as soon as the
+ * POST /api/documents/upload (multipart, fields "collection" and "file"). Returns as soon as the
  * file is accepted — parsing, chunking and embedding happen in the worker, and
  * the document list picks up progress by polling.
  */
@@ -13,14 +20,47 @@ export function useUploadDocument() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (file: File): Promise<UploadResponse> => {
-      logger.info(`[admin upload] "${file.name}" (${file.size} bytes)`);
+    mutationFn: async ({ file, collection }: { file: File; collection: DocumentCollection }): Promise<UploadResponse> => {
+      logger.info(`[admin upload] "${file.name}" (${file.size} bytes, ${collection})`);
       const body = new FormData();
+      // Before the file, so the server has it however the multipart body is read.
+      body.append("collection", collection);
       body.append("file", file);
       return apiFetch<UploadResponse>("/documents/upload", { method: "POST", body });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.adminDocuments() }),
     onError: (err) => logger.error("[admin upload] failed", err),
+  });
+}
+
+/** PATCH /api/documents/:id/collection — make a manual a DRIG Standard one, or move it back. No re-processing. */
+export function useSetDocumentCollection() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ documentId, collection }: { documentId: string; collection: DocumentCollection }) =>
+      apiFetch<{ document_id: string; collection: DocumentCollection }>(`/documents/${documentId}/collection`, {
+        method: "PATCH",
+        body: JSON.stringify({ collection }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.adminDocuments() }),
+    onError: (err) => logger.error("[admin collection] failed", err),
+  });
+}
+
+/** POST /api/wiring/imports (multipart, field "file", .xlsx) — DRIG's vehicle wiring guide. */
+export function useUploadWiringGuide() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (file: File): Promise<WiringImportUploadResponse> => {
+      logger.info(`[admin wiring guide] "${file.name}" (${file.size} bytes)`);
+      const body = new FormData();
+      body.append("file", file);
+      return apiFetch<WiringImportUploadResponse>("/wiring/imports", { method: "POST", body });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.wiringImports() }),
+    onError: (err) => logger.error("[admin wiring guide] failed", err),
   });
 }
 

@@ -1,149 +1,41 @@
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, Download, LoaderCircle, Search, X } from "lucide-react";
-import { toast } from "sonner";
+import { BookOpen, Cable, ShieldCheck } from "lucide-react";
 import { PageShell } from "@/components/common/PageShell";
-import { EmptyState } from "@/components/common/EmptyState";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, apiUrl, authHeaders } from "@/lib/api-client";
-import { uuid } from "@/lib/uuid";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
-import { useAdminDocuments } from "./api/queries";
-import { useDeleteDocument, useRetryDocument, useUploadDocument } from "./api/mutations";
-import { UploadDropzone } from "./components/UploadDropzone";
-import { DocumentRow } from "./components/DocumentRow";
-import { MAX_UPLOAD_BYTES, kindOfFile, unsupportedFileMessage } from "./types";
-// import { uuid } from "@/lib/uuid";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ManualsPanel } from "./components/ManualsPanel";
+import { WiringGuidePanel } from "./components/WiringGuidePanel";
 
-/** A file the admin just chose, before it shows up in the server's document list. */
-interface UploadNotice {
-  id: string;
-  name: string;
-  state: "uploading" | "duplicate" | "error";
-  message?: string;
-}
+type Section = "drig" | "wiring" | "general";
 
-const errorMessage = (err: unknown): string =>
-  err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Upload failed";
+const SECTION_KEY = "drig.admin.section";
+const SECTIONS: ReadonlySet<string> = new Set(["drig", "wiring", "general"]);
+
+const initialSection = (): Section => {
+  try {
+    const saved = localStorage.getItem(SECTION_KEY);
+    return saved && SECTIONS.has(saved) ? (saved as Section) : "drig";
+  } catch {
+    return "drig";
+  }
+};
 
 /**
- * Knowledge-base admin: upload manuals, watch them get parsed into sections
- * and chunks, retry failures. The upload returns immediately; a background
- * worker does the parsing, chunking, embedding and publishing, so progress
- * here comes from polling GET /api/documents — one page of it at a time, the
- * server does the slicing.
+ * Knowledge-base admin, in three separate places so DRIG's own documentation
+ * is never mixed up with everything else:
+ *   DRIG Standard manuals — DRIG's installation manuals; the assistant answers from these first
+ *   DRIG wiring guide     — the vehicle wiring workbook; looked up before Wiresheet
+ *   Other manuals         — vendor manuals and everything else, used when DRIG's don't answer
  */
 export default function AdminKnowledgeScreen() {
-  const [notices, setNotices] = useState<UploadNotice[]>([]);
-  const [page, setPage] = useState(1);
-  const [searchInput, setSearchInput] = useState("");
-  // The query only fires 300ms after typing stops, so each keystroke doesn't
-  // hit the server — searchInput still updates instantly, for a responsive box.
-  const debouncedSearch = useDebouncedValue(searchInput, 300);
-  const { data, isPending, error, refetch } = useAdminDocuments(page, debouncedSearch);
-  const documents = data?.documents;
-  const totalPages = data?.total_pages ?? 1;
+  const [section, setSection] = useState<Section>(initialSection);
 
-  // A new search always starts back at page 1 — set the moment the admin types,
-  // not once the debounced request lands, so Previous/Next never show a stale page.
-  const handleSearchChange = (value: string) => {
-    setSearchInput(value);
-    setPage(1);
-  };
-  const upload = useUploadDocument();
-  const retry = useRetryDocument();
-  const remove = useDeleteDocument();
-
-  const patchNotice = (id: string, patch: Partial<UploadNotice>) =>
-    setNotices((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)));
-  const dismissNotice = (id: string) => setNotices((prev) => prev.filter((n) => n.id !== id));
-
-  const handleFiles = async (files: File[]) => {
-    const items: UploadNotice[] = files.map((file) => ({ id: uuid(), name: file.name, state: "uploading" }));
-    setNotices((prev) => [...items, ...prev]);
-
-    // One at a time: the API already queues the heavy work, and sequential
-    // requests keep a big batch from saturating the connection.
-    for (const [index, file] of files.entries()) {
-      const id = items[index].id;
-
-      if (!kindOfFile(file.name)) {
-        patchNotice(id, { state: "error", message: unsupportedFileMessage(file.name) });
-        continue;
-      }
-      if (file.size > MAX_UPLOAD_BYTES) {
-        patchNotice(id, { state: "error", message: "Larger than the 500 MB limit." });
-        continue;
-      }
-
-      try {
-        const result = await upload.mutateAsync(file);
-        if (result.duplicate) {
-          patchNotice(id, { state: "duplicate", message: "This exact file was already ingested — nothing to do." });
-        } else {
-          // Accepted: it now appears in the document list below, with live progress.
-          dismissNotice(id);
-        }
-      } catch (err) {
-        patchNotice(id, { state: "error", message: errorMessage(err) });
-      }
-    }
-  };
-
-  const handleRetry = (documentId: string) => {
-    retry.mutate(documentId, {
-      onSuccess: (result) => toast.success(result.message ?? "Retry queued"),
-      onError: (err) => toast.error(errorMessage(err)),
-    });
-  };
-
-  // Returns the promise so the confirm dialog stays open when the delete is refused.
-  // Known up front, from what's already on screen: deleting the only document left on
-  // a page past the first would leave this page empty, so step back once it succeeds.
-  const handleDelete = (documentId: string) => {
-    const emptiesPage = documents?.length === 1 && page > 1;
-    return remove.mutateAsync(documentId).then(
-      (result) => {
-        toast.success("Document deleted");
-        for (const warning of result.warnings ?? []) toast.warning(warning);
-        if (emptiesPage) setPage(page - 1);
-      },
-      (err) => {
-        toast.error(errorMessage(err));
-        throw err;
-      },
-    );
-  };
-
-  const retryingId = retry.isPending ? retry.variables : undefined;
-  const deletingId = remove.isPending ? remove.variables : undefined;
-
-  // The tracker is a file download, not JSON, so it bypasses apiFetch: fetch the
-  // blob, then hand it to the browser via a temporary object URL.
-  const [downloadingTracker, setDownloadingTracker] = useState(false);
-  const handleDownloadTracker = async () => {
-    setDownloadingTracker(true);
+  const changeSection = (value: string) => {
+    if (!SECTIONS.has(value)) return;
+    setSection(value as Section);
     try {
-      const res = await fetch(apiUrl("/wiresheet/tracker.xlsx"), { headers: { ...(await authHeaders()) } });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { message?: string };
-        throw new Error(body.message ?? `Download failed (${res.status})`);
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `wiresheet-tracker-${new Date().toISOString().slice(0, 10)}.xlsx`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      toast.success("Wiresheet tracker downloaded");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Download failed");
-    } finally {
-      setDownloadingTracker(false);
+      localStorage.setItem(SECTION_KEY, value);
+    } catch {
+      // Remembering the tab is a convenience only.
     }
   };
 
@@ -154,153 +46,48 @@ export default function AdminKnowledgeScreen() {
         <div className="px-5 py-4">
           <h1 className="text-title font-semibold tracking-tight">Knowledge base</h1>
           <p className="text-micro text-muted-foreground mt-1">
-            Upload manuals and guides (PDF, Word or image). A PDF or Word file is split by section and paragraph; a
-            standalone image (JPG/PNG) is described by an AI model instead, so a labeled diagram or nameplate photo
-            becomes searchable too.
+            DRIG&apos;s own manuals and wiring guide always come first. The other manuals and Wiresheet are only used where DRIG&apos;s
+            documentation has no answer.
           </p>
         </div>
       }
     >
-      <div className="space-y-8">
-        <section aria-label="Upload" className="space-y-3">
-          <UploadDropzone onFiles={handleFiles} />
+      <Tabs value={section} onValueChange={changeSection} className="gap-6">
+        <TabsList className="h-auto w-full flex-wrap sm:w-fit">
+          <TabsTrigger value="drig" className="min-h-9">
+            <ShieldCheck aria-hidden />
+            DRIG Standard manuals
+          </TabsTrigger>
+          <TabsTrigger value="wiring" className="min-h-9">
+            <Cable aria-hidden />
+            DRIG wiring guide
+          </TabsTrigger>
+          <TabsTrigger value="general" className="min-h-9">
+            <BookOpen aria-hidden />
+            Other manuals
+          </TabsTrigger>
+        </TabsList>
 
-          {notices.length > 0 ? (
-            <ul className="space-y-2">
-              {notices.map((notice) => (
-                <li
-                  key={notice.id}
-                  className="border-border bg-card flex items-start gap-3 rounded-lg border px-4 py-3"
-                  role={notice.state === "error" ? "alert" : undefined}
-                >
-                  {notice.state === "uploading" ? (
-                    <LoaderCircle className="text-muted-foreground mt-0.5 size-5 shrink-0 animate-spin" aria-hidden />
-                  ) : null}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-body font-medium break-words">{notice.name}</p>
-                    <p
-                      className={
-                        notice.state === "error" ? "text-micro text-destructive" : "text-micro text-muted-foreground"
-                      }
-                    >
-                      {notice.state === "uploading" ? "Uploading…" : notice.message}
-                    </p>
-                  </div>
-                  {notice.state !== "uploading" ? (
-                    <Button variant="ghost" size="icon-sm" onClick={() => dismissNotice(notice.id)} aria-label="Dismiss">
-                      <X />
-                    </Button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
+        <TabsContent value="drig" className="space-y-4">
+          <p className="text-micro text-muted-foreground">
+            DRIG&apos;s installation manuals (PDF, Word or image). Every question is searched here first; another manual is only used
+            when none of these answers it.
+          </p>
+          <ManualsPanel collection="drig" />
+        </TabsContent>
 
-        <section aria-label="Wiresheet" className="border-border bg-card flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <h2 className="text-lead font-semibold tracking-tight">Wiresheet data</h2>
-            <p className="text-micro text-muted-foreground mt-1">
-              Download every scraped vehicle&apos;s 12V and ignition wiring as an Excel tracker (one row per option, with photos).
-            </p>
-          </div>
-          <Button onClick={handleDownloadTracker} disabled={downloadingTracker} className="shrink-0">
-            {downloadingTracker ? <LoaderCircle className="animate-spin" /> : <Download />}
-            {downloadingTracker ? "Preparing…" : "Download Excel"}
-          </Button>
-        </section>
+        <TabsContent value="wiring">
+          <WiringGuidePanel />
+        </TabsContent>
 
-        <section aria-label="Documents" className="space-y-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="text-lead font-semibold tracking-tight">
-              Documents
-              {data && data.total > 0 ? <span className="text-muted-foreground ml-2 font-normal">{data.total}</span> : null}
-            </h2>
-
-            <div className="relative sm:w-72">
-              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" aria-hidden />
-              <Input
-                type="search"
-                value={searchInput}
-                onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search by file name…"
-                aria-label="Search documents by file name"
-                className="pl-9"
-              />
-            </div>
-          </div>
-
-          {isPending ? (
-            <div className="space-y-3">
-              <Skeleton className="h-24 w-full" />
-              <Skeleton className="h-24 w-full" />
-            </div>
-          ) : error ? (
-            <div className="border-destructive rounded-xl border p-4" role="alert">
-              <p className="text-body text-destructive font-medium">Couldn&apos;t load documents</p>
-              <p className="text-micro text-muted-foreground mt-1">{errorMessage(error)}</p>
-              <Button variant="outline" size="sm" className="mt-3" onClick={() => void refetch()}>
-                Try again
-              </Button>
-            </div>
-          ) : !documents || documents.length === 0 ? (
-            debouncedSearch ? (
-              <EmptyState
-                title="No matches"
-                body={`No document title contains "${debouncedSearch}".`}
-                action={
-                  <Button variant="outline" size="sm" onClick={() => handleSearchChange("")}>
-                    Clear search
-                  </Button>
-                }
-              />
-            ) : (
-              <EmptyState
-                title="No manuals yet"
-                body="Upload the first PDF above. It will appear here while it is read, split and indexed."
-              />
-            )
-          ) : (
-            <>
-              <ul className="space-y-3">
-                {documents.map((doc) => (
-                  <DocumentRow
-                    key={doc.document_id}
-                    document={doc}
-                    onRetry={handleRetry}
-                    retrying={retryingId === doc.document_id}
-                    onDelete={handleDelete}
-                    deleting={deletingId === doc.document_id}
-                  />
-                ))}
-              </ul>
-
-              {totalPages > 1 ? (
-                <div className="flex items-center justify-between pt-1">
-                  <p className="text-micro text-muted-foreground">
-                    Page {page} of {totalPages}
-                  </p>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>
-                      <ChevronLeft />
-                      Previous
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={page === totalPages}
-                      onClick={() => setPage(page + 1)}
-                    >
-                      Next
-                      <ChevronRight />
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </>
-          )}
-        </section>
-      </div>
+        <TabsContent value="general" className="space-y-4">
+          <p className="text-micro text-muted-foreground">
+            Vendor manuals and guides. A PDF or Word file is split by section and paragraph; a standalone image (JPG/PNG) is described
+            by an AI model, so a labeled diagram or nameplate photo becomes searchable too.
+          </p>
+          <ManualsPanel collection="general" />
+        </TabsContent>
+      </Tabs>
     </PageShell>
   );
 }

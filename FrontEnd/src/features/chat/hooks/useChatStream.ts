@@ -59,7 +59,7 @@ export const toCitations = (sources: WireSource[]): Citation[] =>
   );
 
 export const toImages = (images: WireImage[]): AnswerImage[] =>
-  images.map((i) => ({ label: i.label, url: i.url, page: i.page, documentId: i.document_id }));
+  images.map((i) => ({ label: i.label, url: i.url, href: i.href ?? i.url, page: i.page, documentId: i.document_id ?? null }));
 
 const agentTurn = (overrides: Partial<Turn>): Turn => ({
   turnId: uuid(),

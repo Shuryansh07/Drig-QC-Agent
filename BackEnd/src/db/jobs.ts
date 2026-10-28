@@ -47,7 +47,8 @@ export const createJob = async ({
   maxAttempts,
 }: {
   jobType: string;
-  docId: string;
+  /** Null for a job that is not about one document (the wiring guide import). */
+  docId: string | null;
   payload?: unknown;
   maxAttempts?: number;
 }): Promise<IngestionJob> => {
@@ -206,4 +207,13 @@ export const getQueueStats = async (): Promise<Record<string, number>> => {
   const stats: Record<string, number> = { pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const row of rows) stats[row.status] = parseInt(row.count, 10);
   return stats;
+};
+
+/**
+ * Heartbeat for a long job: keeps recoverStaleJobs() from treating it as
+ * abandoned (it compares locked_at against STALE_JOB_TIMEOUT_MS) while it is
+ * still making progress. Guarded on 'running' so it never revives a cancelled job.
+ */
+export const touchJob = async (jobId: string): Promise<void> => {
+  await pool.query(`update ingestion_job set locked_at = now(), updated_at = now() where id = $1 and status = 'running'`, [jobId]);
 };

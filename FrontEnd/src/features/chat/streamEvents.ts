@@ -23,8 +23,11 @@ export interface WireImage {
   label: string;
   /** Presigned — expires; don't persist it past this response. */
   url: string;
+  /** The full-size original (or the PDF a preview was made from), when it differs from `url`. */
+  href?: string;
   page: number | null;
-  document_id: string;
+  /** Null for a wiring-guide or Wiresheet photo. */
+  document_id: string | null;
 }
 
 export type WireEvent =

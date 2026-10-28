@@ -16,6 +16,7 @@ import { getQueueStats } from "./db/jobs.js";
 import { logger } from "./utils/logger.js";
 import audioRoutes from "./routes/audio.routes.js";
 import wiresheetRoutes from "./routes/wiresheet.routes.js";
+import wiringRoutes from "./routes/wiring.routes.js";
 import { settleInterruptedSyncs } from "./services/driveSync.service.js";
 
 const app = express();
@@ -30,6 +31,7 @@ app.use("/api/citations", citationRoutes);
 app.use("/api/conversations", conversationRoutes);
 app.use("/api/audio", audioRoutes);
 app.use("/api/wiresheet", wiresheetRoutes);
+app.use("/api/wiring", wiringRoutes);
 
 app.get("/", (req, res) => {
   res.json({

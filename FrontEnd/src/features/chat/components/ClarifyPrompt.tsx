@@ -1,5 +1,6 @@
 import type { ClarifyRequest } from "@/types/contracts";
 import { Button } from "@/components/ui/button";
+import { VehicleClarifyForm } from "./VehicleClarifyForm";
 
 interface ClarifyPromptProps {
   clarify: ClarifyRequest;
@@ -12,6 +13,9 @@ interface ClarifyPromptProps {
  * of the conversation — nothing here is a failure.
  */
 export function ClarifyPrompt({ clarify, onAnswer }: ClarifyPromptProps) {
+  // A wiring question that needs the vehicle: a form, not a list of options.
+  if (clarify.slot === "vehicle") return <VehicleClarifyForm clarify={clarify} onAnswer={onAnswer} />;
+
   return (
     <section
       aria-labelledby={`clarify-${clarify.slot}`}

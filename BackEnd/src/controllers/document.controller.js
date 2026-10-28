@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { enqueueIngestion, enqueueRetry, deleteDocument } from "../services/ragIngestion.service.js";
 import * as documents from "../db/documents.js";
 import * as documentPages from "../db/documentPages.js";
@@ -20,11 +21,19 @@ export const uploadDocument = async (req, res) => {
       });
     }
 
-    logger.info(`[upload] received "${req.file.originalname}" (${req.file.size} bytes)`);
+    // Multipart text field "collection": "drig" for a DRIG Standard manual, anything else is refused.
+    const collection = req.body?.collection ?? "general";
+    if (!documents.DOCUMENT_COLLECTIONS.has(collection)) {
+      await fs.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({ success: false, message: 'collection must be "drig" or "general"' });
+    }
+
+    logger.info(`[upload] received "${req.file.originalname}" (${req.file.size} bytes, collection ${collection})`);
 
     const result = await enqueueIngestion({
       filePath: req.file.path,
       fileName: req.file.originalname,
+      collection,
     });
 
     logger.info(`[upload] acknowledged in ${Date.now() - requestStart}ms`);
@@ -34,7 +43,10 @@ export const uploadDocument = async (req, res) => {
         document_id: result.documentId,
         status: result.status,
         duplicate: true,
-        message: "Identical file already ingested — reusing existing document",
+        promoted: Boolean(result.promoted),
+        message: result.promoted
+          ? "Identical file was already ingested — it is now a DRIG Standard manual"
+          : "Identical file already ingested — reusing existing document",
       });
     }
 
@@ -164,8 +176,9 @@ export const listDocumentsController = async (req, res) => {
     const page = toPositiveInt(req.query.page, 1);
     const pageSize = toPositiveInt(req.query.page_size, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const search = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : undefined;
+    const collection = documents.DOCUMENT_COLLECTIONS.has(req.query.collection) ? req.query.collection : undefined;
 
-    const { documents: rows, total } = await documents.listDocuments(page, pageSize, search);
+    const { documents: rows, total } = await documents.listDocuments(page, pageSize, search, collection);
 
     return res.status(200).json({
       page,
@@ -178,6 +191,7 @@ export const listDocumentsController = async (req, res) => {
         return {
           document_id: d.docId,
           title: d.title,
+          collection: d.collection,
           status: d.ingestStatus,
           total_pages: d.pageCount,
           processed_pages: d.processedPages,
@@ -248,6 +262,30 @@ export const getDocumentStatus = async (req, res) => {
   } catch (error) {
     logger.error("Document status error", error);
     return res.status(500).json({ success: false, message: "Failed to fetch document status" });
+  }
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * PATCH /api/documents/:id/collection { collection: "drig" | "general" } —
+ * marks a manual as a DRIG Standard one (searched first) or back. Takes effect
+ * on the next question; nothing is re-processed.
+ */
+export const setDocumentCollectionController = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const collection = req.body?.collection;
+    if (!UUID_RE.test(id)) return res.status(400).json({ success: false, message: "id must be a document id" });
+    if (!documents.DOCUMENT_COLLECTIONS.has(collection)) return res.status(400).json({ success: false, message: 'collection must be "drig" or "general"' });
+
+    const updated = await documents.setDocumentCollection(id, collection);
+    if (!updated) return res.status(404).json({ success: false, message: "Document not found" });
+    logger.info(`[documents] ${id} moved to collection ${collection}`);
+    return res.status(200).json({ document_id: id, collection });
+  } catch (error) {
+    logger.error("Document collection change error", error);
+    return res.status(500).json({ success: false, message: "Failed to update the document" });
   }
 };
 

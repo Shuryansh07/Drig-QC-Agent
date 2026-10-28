@@ -11,9 +11,14 @@ export type IngestStatus =
   | "completed_with_errors"
   | "failed";
 
+/** 'drig' = a DRIG Standard manual: searched first, before every other manual. */
+export type DocumentCollection = "general" | "drig";
+export const DOCUMENT_COLLECTIONS: ReadonlySet<string> = new Set(["general", "drig"]);
+
 export interface DocumentRecord {
   docId: string;
   title: string;
+  collection: DocumentCollection;
   contentHash: string | null;
   externalRef: string | null;
   liveVersion: number;
@@ -31,6 +36,7 @@ export interface DocumentRecord {
 const mapRow = (r: any): DocumentRecord => ({
   docId: r.doc_id,
   title: r.title,
+  collection: r.collection ?? "general",
   contentHash: r.content_hash,
   externalRef: r.external_ref,
   liveVersion: r.live_version,
@@ -46,7 +52,7 @@ const mapRow = (r: any): DocumentRecord => ({
 });
 
 const SELECT = `
-  select d.doc_id, d.title, d.content_hash, d.external_ref, d.live_version, d.created_at,
+  select d.doc_id, d.title, d.collection, d.content_hash, d.external_ref, d.live_version, d.created_at,
          s.ingest_status, s.temp_file_path, s.page_count, s.processed_pages, s.failed_pages,
          s.error_message, s.workdrive_folder_id, s.updated_at
     from kb_document d
@@ -79,7 +85,7 @@ const escapeLike = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
  * — the count query always reflects the real total regardless of which page
  * is empty.
  */
-export const listDocuments = async (page = 1, pageSize = 10, search?: string): Promise<DocumentPage> => {
+export const listDocuments = async (page = 1, pageSize = 10, search?: string, collection?: DocumentCollection): Promise<DocumentPage> => {
   const { orgId } = await getDefaultOrg();
   const offset = (page - 1) * pageSize;
   const trimmed = search?.trim();
@@ -92,12 +98,16 @@ export const listDocuments = async (page = 1, pageSize = 10, search?: string): P
     baseParams.push(`%${escapeLike(trimmed)}%`);
     titleFilter = ` and d.title ilike $${baseParams.length} escape '\\'`;
   }
+  if (collection) {
+    baseParams.push(collection);
+    titleFilter += ` and d.collection = $${baseParams.length}`;
+  }
 
   const [{ rows }, {
     rows: [{ count }],
   }] = await Promise.all([
     pool.query(
-      `select d.doc_id, d.title, d.content_hash, d.external_ref, d.live_version, d.created_at,
+      `select d.doc_id, d.title, d.collection, d.content_hash, d.external_ref, d.live_version, d.created_at,
               s.ingest_status, s.temp_file_path, s.page_count, s.processed_pages, s.failed_pages,
               s.error_message, s.workdrive_folder_id, s.updated_at,
               (select count(*) from kb_chunk c where c.doc_id = d.doc_id and c.deleted_at is null and c.is_parent) as parent_chunks,
@@ -173,6 +183,33 @@ export const listEquipmentCatalog = async (limit = 10000): Promise<CatalogEntry[
   }));
 };
 
+/**
+ * Moves a document between the DRIG Standard manuals and the others. No
+ * re-ingestion: the collection is read at search time. False when the
+ * document does not exist.
+ */
+export const setDocumentCollection = async (docId: string, collection: DocumentCollection): Promise<boolean> => {
+  const { orgId } = await getDefaultOrg();
+  const { rowCount } = await pool.query(`update kb_document set collection = $3 where doc_id = $1 and org_id = $2`, [docId, orgId, collection]);
+  if (rowCount) {
+    await pool.query(`insert into event_log (org_id, event_type, payload) values ($1, 'document.collection_changed', $2::jsonb)`, [
+      orgId,
+      JSON.stringify({ doc_id: docId, collection }),
+    ]);
+  }
+  return Boolean(rowCount);
+};
+
+/** Live, searchable DRIG Standard manuals: what retrieval searches first. Same liveness test as the catalog. */
+export const listLiveDrigDocIds = async (): Promise<string[]> => {
+  const { orgId } = await getDefaultOrg();
+  const { rows } = await pool.query<{ doc_id: string }>(
+    `select doc_id from kb_document where org_id = $1 and collection = 'drig' and status = 'current' and live_version > 0`,
+    [orgId]
+  );
+  return rows.map((r) => r.doc_id);
+};
+
 /** Every uploaded document's title (its original file name), for the Drive sync's "already imported" count. */
 export const listUploadTitles = async (): Promise<Set<string>> => {
   const { orgId } = await getDefaultOrg();
@@ -204,10 +241,12 @@ export const createDocument = async ({
   title,
   contentHash,
   tempFilePath,
+  collection = "general",
 }: {
   title: string;
   contentHash: string;
   tempFilePath: string;
+  collection?: DocumentCollection;
 }): Promise<DocumentRecord> => {
   const { orgId } = await getDefaultOrg();
   const sourceId = await getUploadSourceId();
@@ -216,10 +255,10 @@ export const createDocument = async ({
   try {
     await client.query("begin");
     const { rows: docRows } = await client.query(
-      `insert into kb_document (org_id, source_id, external_ref, title, content_hash, origin, sync_state)
-       values ($1, $2, $3, $4, $5, 'upload', 'fetched')
+      `insert into kb_document (org_id, source_id, external_ref, title, content_hash, origin, sync_state, collection)
+       values ($1, $2, $3, $4, $5, 'upload', 'fetched', $6)
        returning doc_id`,
-      [orgId, sourceId, `upload:${title}:${Date.now()}`, title, contentHash]
+      [orgId, sourceId, `upload:${title}:${Date.now()}`, title, contentHash, collection]
     );
     const docId = docRows[0].doc_id;
 

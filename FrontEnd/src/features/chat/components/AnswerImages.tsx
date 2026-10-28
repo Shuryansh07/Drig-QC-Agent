@@ -20,7 +20,7 @@ export function AnswerImages({ images }: AnswerImagesProps) {
       {images.map((image) => (
         <a
           key={image.url}
-          href={image.url}
+          href={image.href ?? image.url}
           target="_blank"
           rel="noopener noreferrer"
           className="border-border bg-card block overflow-hidden rounded-2xl border"

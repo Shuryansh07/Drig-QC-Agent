@@ -9,8 +9,26 @@ import {
   getRetrievalEquipmentFilterEnabled,
 } from "../db/settings.js";
 import { resolveEquipmentFilter } from "./equipmentFilter.service.js";
+import { listLiveDrigDocIds } from "../db/documents.js";
 import { withTiming } from "../utils/timing.js";
 import { logger } from "../utils/logger.js";
+
+// Short: a manual just marked DRIG Standard should be preferred within a minute.
+const DRIG_IDS_TTL_MS = 60 * 1000;
+let drigIdsCache = null;
+
+/** Live DRIG Standard manuals. A failure means "none": retrieval then searches everything, as before. */
+const liveDrigDocIds = async () => {
+  if (drigIdsCache && drigIdsCache.expiresAt > Date.now()) return drigIdsCache.ids;
+  try {
+    const ids = await listLiveDrigDocIds();
+    drigIdsCache = { ids, expiresAt: Date.now() + DRIG_IDS_TTL_MS };
+    return ids;
+  } catch (err) {
+    logger.warn(`[retrieval] could not load the DRIG Standard manuals (${err.message}); searching all manuals`);
+    return [];
+  }
+};
 
 // A model or part code: letters AND digits in one token ("5550X-VM", "N4",
 // "EC1004"). A bare number ("5550") or a bare word is not one.
@@ -62,6 +80,12 @@ export const decideAdmission = ({ matches, question, minSimilarity, admitOnExact
  * finds nothing at all, it is run again over everything, so a filter that
  * picked too narrowly costs one query, never the answer.
  *
+ * DRIG Standard manuals (kb_document.collection = 'drig') are searched first,
+ * within the equipment filter when there is one. If that search passes the
+ * same admission gate, it is the answer's evidence and nothing else is
+ * searched; otherwise retrieval carries on over every manual as above.
+ * `admission.tier` says which ("drig" | "all").
+ *
  * @returns {{ chunks: object[], admission: object, embedding: number[], candidateIds: string[], equipment: object }}
  *   `chunks` is empty whenever the gate refuses, so a caller that forgets to
  *   check `admission` still cannot generate from rejected material.
@@ -82,6 +106,20 @@ export const retrieveRelevantChunks = async ({ question }) => {
   const search = (docIds) =>
     withTiming("match_chunks()", () => matchChunks({ orgId, queryEmbedding: embedding, queryText: question, matchCount, docIds }));
 
+  // DRIG Standard manuals first. When they answer the question well enough to pass the same gate,
+  // the answer comes from them alone; only otherwise are the other manuals searched.
+  const drigDocIds = await liveDrigDocIds();
+  const drigScope = drigDocIds.length === 0 ? [] : equipment.docIds ? equipment.docIds.filter((id) => drigDocIds.includes(id)) : drigDocIds;
+  if (drigScope.length > 0) {
+    const drigMatches = await search(drigScope);
+    const drigAdmission = decideAdmission({ matches: drigMatches, question, minSimilarity, admitOnExactCode });
+    if (drigAdmission.admitted) {
+      logger.info(`[retrieval] answered from DRIG Standard manuals (${drigScope.length} in scope, top similarity ${drigAdmission.topSimilarity.toFixed(3)})`);
+      return assemble({ matches: drigMatches, admission: { ...drigAdmission, tier: "drig" }, embedding, equipment });
+    }
+    logger.info(`[retrieval] no DRIG Standard manual answers it (top similarity ${drigAdmission.topSimilarity.toFixed(3)}); searching all manuals`);
+  }
+
   let matches = await search(equipment.docIds);
   if (equipment.docIds && matches.length === 0) {
     logger.info(`[retrieval] nothing in the ${equipment.docIds.length} document(s) for "${equipment.equipment.join(", ")}"; searching everything`);
@@ -89,6 +127,11 @@ export const retrieveRelevantChunks = async ({ question }) => {
   }
 
   const admission = decideAdmission({ matches, question, minSimilarity, admitOnExactCode });
+  return assemble({ matches, admission: { ...admission, tier: "all" }, embedding, equipment });
+};
+
+/** Fetches the matched chunks' text and shapes them for the answer step (parent sections, de-duplicated). */
+const assemble = async ({ matches, admission, embedding, equipment }) => {
   const candidateIds = matches.map((m) => m.chunkId);
 
   if (!admission.admitted) return { chunks: [], admission, embedding, candidateIds, equipment };
