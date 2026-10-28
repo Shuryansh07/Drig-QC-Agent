@@ -40,6 +40,8 @@ export const getSetting = get;
 export const getRetrievalMatchCount = () => get<number>("retrieval.match_count", 8);
 export const getRetrievalAdmitMinSimilarity = () => get<number>("retrieval.admit_min_similarity", 0.35);
 export const getRetrievalAdmitOnExactCode = () => get<boolean>("retrieval.admit_on_exact_code", true);
+// Equipment filter: a question that names a product searches only that product's documents.
+export const getRetrievalEquipmentFilterEnabled = () => get<boolean>("retrieval.equipment_filter_enabled", true);
 // FAQ of resolved questions. A new question within `min_similarity` of one brings that answer's passages back;
 // `strong_similarity` also skips the clarification question; `dedupe_similarity` stops near-copies piling up.
 export const getFaqMinSimilarity = () => get<number>("faq.min_similarity", 0.8);

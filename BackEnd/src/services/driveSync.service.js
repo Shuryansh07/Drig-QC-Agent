@@ -268,14 +268,29 @@ const scan = async () => {
   return files;
 };
 
+/** A listed file's content (a Google Doc as its PDF export), with its resource key and the shared rate limiting. */
+const fetchContent = (file) =>
+  driveFetch(
+    file.exportPdf
+      ? `${API_BASE}/files/${file.id}/export?${new URLSearchParams({ mimeType: "application/pdf", key: API_KEY })}`
+      : `${API_BASE}/files/${file.id}?${new URLSearchParams({ alt: "media", supportsAllDrives: "true", key: API_KEY })}`,
+    [[file.id, file.resourceKey]]
+  );
+
+/** Every supported file in the synced folder, as listFiles() returns them. For scripts that re-read originals. */
+export const listSyncedFiles = async () => {
+  if (!isDriveSyncConfigured()) throw new Error("Google Drive sync is not configured (GOOGLE_API_KEY / GDRIVE_FOLDER_ID)");
+  return (await listFiles(FOLDER_ID, FOLDER_RESOURCE_KEY)).files;
+};
+
+/** One listed file's bytes, in memory. */
+export const downloadSyncedFile = async (file) => Buffer.from(await (await fetchContent(file)).arrayBuffer());
+
 const downloadAndEnqueue = async (file) => {
   const kind = kindOfFileName(file.fileName);
   const filePath = path.join(TEMP_UPLOAD_DIR, `${crypto.randomUUID()}${extensionOfKind(kind)}`);
-  const url = file.exportPdf
-    ? `${API_BASE}/files/${file.id}/export?${new URLSearchParams({ mimeType: "application/pdf", key: API_KEY })}`
-    : `${API_BASE}/files/${file.id}?${new URLSearchParams({ alt: "media", supportsAllDrives: "true", key: API_KEY })}`;
   try {
-    const response = await driveFetch(url, [[file.id, file.resourceKey]]);
+    const response = await fetchContent(file);
     await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(filePath));
   } catch (err) {
     await fs.promises.rm(filePath, { force: true });

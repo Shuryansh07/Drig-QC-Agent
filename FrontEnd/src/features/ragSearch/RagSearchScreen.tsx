@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ApiError } from "@/lib/api-client";
+import { pageCaption } from "@/lib/pageCaption";
 import { useRagQuery } from "./api/mutations";
 
 /**
@@ -97,7 +98,7 @@ export default function RagSearchScreen() {
                 <div className="flex flex-wrap gap-2">
                   {data.sources.map((s, i) => (
                     <Badge key={`${s.document_id}-${s.page_number}-${i}`} variant="secondary">
-                      {s.page_number !== null ? `Page ${s.page_number}` : (s.section_path?.split(" > ").pop() ?? "Document")}
+                      {s.page_number !== null ? pageCaption(s.page_number, s.page_label) : (s.section_path?.split(" > ").pop() ?? "Document")}
                       <span className="text-muted-foreground ml-1 font-mono text-[10px]">
                         {s.document_id.slice(0, 8)}
                       </span>

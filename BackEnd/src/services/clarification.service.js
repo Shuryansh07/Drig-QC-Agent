@@ -33,7 +33,7 @@ export const cleanTitle = (title) =>
 const hintOf = (chunk) => {
   const section = chunk.sectionPath?.split(" > ").pop();
   if (section) return section;
-  return chunk.pageNumber !== null && chunk.pageNumber !== undefined ? `Page ${chunk.pageNumber}` : undefined;
+  return chunk.pageNumber !== null && chunk.pageNumber !== undefined ? `Page ${chunk.pageLabel ?? chunk.pageNumber}` : undefined;
 };
 
 /**

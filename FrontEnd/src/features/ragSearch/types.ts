@@ -8,6 +8,8 @@ export interface RagQuerySource {
   document_id: string;
   /** Null for a Word document, which has no pages. */
   page_number: number | null;
+  /** The number printed on that page, when it shows one. */
+  page_label?: string | null;
   section_path?: string | null;
 }
 

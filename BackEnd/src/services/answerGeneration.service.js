@@ -21,7 +21,9 @@ const SYSTEM_PROMPT = `You are a technical support assistant answering questions
 Grounding rules:
 - Answer ONLY using the evidence provided below. Do not use outside knowledge and do not invent information.
 - Every important fact, number, or instruction in your answer must be traceable to the supplied evidence.
+- Do not add steps, qualifiers or consequences the evidence does not give, even ones that seem obvious (refitting a cover, tightening screws, "if needed", "will void the warranty"). Where an attached image shows something the text does not say (which way a card goes in), describe what the image shows.
 - Cite the source for every important fact — the page number in the form "(Page N)" when the evidence header has one, otherwise the section name in the form "(Section: name)" — but weave it naturally into the sentence it belongs to, not as a bullet-point label bolted on afterward.
+- Some evidence headers also give a printed page ("Page 16 (printed page 8)"): the number printed on the paper differs from the page's place in the file. Keep citing "(Page 16)". But when a sentence tells the person where to look ("the photo on ... shows"), name the printed page ("printed page 8"), because that is the number they will see.
 - If the retrieved evidence is insufficient to answer the question, say plainly that the available document evidence is insufficient to answer it — do not guess.
 - Some evidence pages may be attached as images. Each attached page comes as the whole page first, then overlapping zoomed sections of the SAME page for reading small print: never count a component twice because it appears in both. These images are the document itself, so they are evidence just like the text — read wire colours, gauges, pins, labels, counts and title-block details directly from them.
 - Evidence that begins with ${FIGURE_MARKER} was written by an AI model looking at a diagram, photo or table image. It is a guide, not the document's own text, and it can be wrong. It was written from a more zoomed-in view than you get, so it is often right about very small labels. When the same page is attached as an image, check the description against the image; where they disagree on a detail, give both readings and tell the person to confirm on the drawing.
@@ -48,13 +50,22 @@ Conversation context:
 
 export const INSUFFICIENT_EVIDENCE_ANSWER = "The available document evidence is insufficient to answer this question.";
 
+/**
+ * " (printed page 8)" when the number printed on a page differs from its place
+ * in the file (kb_document_page.page_label), otherwise "". The "(Page N)"
+ * citations stay on the file's page, which is what retrieval and the citation
+ * check know; the printed one is what a technician holding the paper looks for.
+ */
+const printedPageNote = (pageNumber, pageLabel) =>
+  pageLabel && pageLabel !== String(pageNumber) ? ` (printed page ${pageLabel})` : "";
+
 // Not all models accept a custom temperature (e.g. gpt-5 only supports its
 // default) — omit it and rely on the strict, grounded system prompt instead.
 export const buildMessages = ({ question, chunks, images = [], history = [], faq = null }) => {
   const evidenceText = chunks
     // Word documents have no page numbers: their evidence is located by section only.
     .map((c, i) => {
-      const where = c.pageNumber !== null && c.pageNumber !== undefined ? `Page ${c.pageNumber}` : "No page number";
+      const where = c.pageNumber !== null && c.pageNumber !== undefined ? `Page ${c.pageNumber}${printedPageNote(c.pageNumber, c.pageLabel)}` : "No page number";
       return `[Chunk ${i + 1} — ${where}${c.sectionPath ? ` — Section: ${c.sectionPath}` : ""}]\n${c.content}`;
     })
     .join("\n\n");
@@ -107,12 +118,14 @@ export const loadEvidenceImages = async (chunks) => {
   }
 
   const titleOf = new Map(chunks.map((c) => [c.documentId, c.documentTitle]));
+  const labelOf = new Map(chunks.map((c) => [`${c.documentId}:${c.pageNumber}`, c.pageLabel]));
   const loaded = await Promise.all(
     found.map(async (figure) => {
       try {
         const buffer = await storage.getBuffer(figure.s3Key);
         const mimeType = figure.s3Key.endsWith(".jpg") ? "image/jpeg" : `image/${figure.s3Key.split(".").pop()}`;
-        const where = figure.page !== null ? `page ${figure.page}` : "embedded image";
+        const where =
+          figure.page !== null ? `page ${figure.page}${printedPageNote(figure.page, labelOf.get(`${figure.docId}:${figure.page}`))}` : "embedded image";
         return {
           label: `${titleOf.get(figure.docId) ?? "Document"}, ${where}`,
           parts: await toVisionImages(buffer, mimeType),
@@ -149,6 +162,8 @@ export const sourcesFromChunks = (chunks) =>
           document_id: c.documentId,
           document_title: c.documentTitle ?? null,
           page_number: c.pageNumber ?? null,
+          // What is printed on that page, when it shows a number: the UI shows it beside page_number.
+          page_label: c.pageLabel ?? null,
           section_path: c.sectionPath ?? null,
         },
       ])

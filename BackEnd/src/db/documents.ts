@@ -142,6 +142,37 @@ export const listLiveDocumentTitles = async (limit = 8): Promise<string[]> => {
   return rows.map((r) => r.title.replace(/\.(pdf|docx)$/i, ""));
 };
 
+export interface CatalogEntry {
+  docId: string;
+  title: string;
+  vendor: string | null;
+  productFamily: string | null;
+  models: string[];
+}
+
+/**
+ * Every live, searchable document with what it says it is about — the list a
+ * question's equipment is matched against before retrieval
+ * (equipmentFilter.service.js). Same liveness test as listLiveDocumentTitles.
+ */
+export const listEquipmentCatalog = async (limit = 10000): Promise<CatalogEntry[]> => {
+  const { orgId } = await getDefaultOrg();
+  const { rows } = await pool.query(
+    `select doc_id, title, vendor, product_family, models from kb_document
+      where org_id = $1 and status = 'current' and live_version > 0
+      order by title
+      limit $2`,
+    [orgId, limit]
+  );
+  return rows.map((r) => ({
+    docId: r.doc_id,
+    title: r.title,
+    vendor: r.vendor,
+    productFamily: r.product_family,
+    models: r.models ?? [],
+  }));
+};
+
 /** Every uploaded document's title (its original file name), for the Drive sync's "already imported" count. */
 export const listUploadTitles = async (): Promise<Set<string>> => {
   const { orgId } = await getDefaultOrg();

@@ -11,6 +11,7 @@ import { isOnline } from "@/lib/offline";
 import { logger } from "@/lib/logger";
 import { uuid } from "@/lib/uuid";
 import { buildAnswerSteps } from "@/features/chat/lib/procedure";
+import { pageCaption } from "@/lib/pageCaption";
 import type { AnswerImage, Citation, ClarifyRequest, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
 // import { uuid } from "@/lib/uuid";
 
@@ -48,7 +49,7 @@ export const toCitations = (sources: WireSource[]): Citation[] =>
           kind: "document",
           // A PDF is cited by page, then section. A Word file has no pages, so it is cited by
           // document AND section: two Word files can both have a "Wiring" section.
-          label: paged ? `Page ${s.page_number}` : [docName(s.document_title), section].filter(Boolean).join(" · ") || "Document",
+          label: paged ? pageCaption(s.page_number as number, s.page_label) : [docName(s.document_title), section].filter(Boolean).join(" · ") || "Document",
           locator: paged ? section : "",
           documentId: s.document_id,
         };

@@ -50,16 +50,34 @@ export const findPagesByDoc = async (docId: string): Promise<DocumentPageRecord[
  * chunk plan spans pages, so pages can't be redone one at a time), so every
  * page goes back to 'processing' — one statement, not one per page.
  */
-export const resetPagesForRun = async (docId: string, pages: { pageNumber: number; hasVisual: boolean }[]): Promise<void> => {
+export const resetPagesForRun = async (
+  docId: string,
+  pages: { pageNumber: number; hasVisual: boolean; pageLabel?: string | null }[]
+): Promise<void> => {
   if (pages.length === 0) return;
   await pool.query(
     `update kb_document_page p
         set status = 'processing', embedding_completed = false, last_error = null,
-            has_visual = v.has_visual, started_at = now(), completed_at = null, updated_at = now()
-       from unnest($2::int[], $3::boolean[]) as v(page_number, has_visual)
+            has_visual = v.has_visual, page_label = v.page_label,
+            started_at = now(), completed_at = null, updated_at = now()
+       from unnest($2::int[], $3::boolean[], $4::text[]) as v(page_number, has_visual, page_label)
       where p.doc_id = $1 and p.page_number = v.page_number`,
-    [docId, pages.map((p) => p.pageNumber), pages.map((p) => p.hasVisual)]
+    [docId, pages.map((p) => p.pageNumber), pages.map((p) => p.hasVisual), pages.map((p) => p.pageLabel ?? null)]
   );
+};
+
+/** The printed page number of each page (kb_document_page.page_label), for the backfill of documents ingested before labels were read. */
+export const setPageLabels = async (docId: string, labels: { pageNumber: number; pageLabel: string | null }[]): Promise<number> => {
+  if (labels.length === 0) return 0;
+  const { rowCount } = await pool.query(
+    `update kb_document_page p
+        set page_label = v.page_label, updated_at = now()
+       from unnest($2::int[], $3::text[]) as v(page_number, page_label)
+      where p.doc_id = $1 and p.page_number = v.page_number
+        and p.page_label is distinct from v.page_label`,
+    [docId, labels.map((l) => l.pageNumber), labels.map((l) => l.pageLabel)]
+  );
+  return rowCount ?? 0;
 };
 
 /** A page is complete once every chunk that starts on it is stored. */

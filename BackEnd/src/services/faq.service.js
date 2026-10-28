@@ -40,6 +40,7 @@ export const findFaq = async ({ embedding }) => {
         chunkId: t.chunkId,
         documentId: t.docId,
         pageNumber: t.pageFrom,
+        pageLabel: t.pageLabel,
         sectionPath: t.sectionPath,
         documentTitle: t.documentTitle,
         content: t.parentContent ?? t.content,

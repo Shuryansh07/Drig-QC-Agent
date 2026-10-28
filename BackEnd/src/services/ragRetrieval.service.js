@@ -2,8 +2,15 @@ import { generateEmbedding } from "./embedding.service.js";
 import { matchChunks } from "../db/retrieval.js";
 import { getChunksByIds } from "../db/chunks.js";
 import { getDefaultOrg } from "../db/org.js";
-import { getRetrievalMatchCount, getRetrievalAdmitMinSimilarity, getRetrievalAdmitOnExactCode } from "../db/settings.js";
+import {
+  getRetrievalMatchCount,
+  getRetrievalAdmitMinSimilarity,
+  getRetrievalAdmitOnExactCode,
+  getRetrievalEquipmentFilterEnabled,
+} from "../db/settings.js";
+import { resolveEquipmentFilter } from "./equipmentFilter.service.js";
 import { withTiming } from "../utils/timing.js";
+import { logger } from "../utils/logger.js";
 
 // A model or part code: letters AND digits in one token ("5550X-VM", "N4",
 // "EC1004"). A bare number ("5550") or a bare word is not one.
@@ -49,27 +56,42 @@ export const decideAdmission = ({ matches, question, minSimilarity, admitOnExact
  * twice, so results are de-duplicated by parent, keeping the best-ranked
  * child (matches arrive best-first) for the page citation.
  *
- * @returns {{ chunks: object[], admission: object, embedding: number[], candidateIds: string[] }}
+ * Equipment filter: when the question names a product, the search is limited
+ * to the documents about that product (equipmentFilter.service.js), resolved
+ * alongside the embedding so it adds little delay. If that filtered search
+ * finds nothing at all, it is run again over everything, so a filter that
+ * picked too narrowly costs one query, never the answer.
+ *
+ * @returns {{ chunks: object[], admission: object, embedding: number[], candidateIds: string[], equipment: object }}
  *   `chunks` is empty whenever the gate refuses, so a caller that forgets to
  *   check `admission` still cannot generate from rejected material.
  */
 export const retrieveRelevantChunks = async ({ question }) => {
   const { orgId } = await getDefaultOrg();
-  const embedding = await generateEmbedding(question);
+  const filterEnabled = await getRetrievalEquipmentFilterEnabled().catch(() => true);
+  const [embedding, equipment] = await Promise.all([
+    generateEmbedding(question),
+    filterEnabled ? withTiming("equipment filter", () => resolveEquipmentFilter(question)) : { equipment: [], docIds: null },
+  ]);
   const [matchCount, minSimilarity, admitOnExactCode] = await Promise.all([
     getRetrievalMatchCount(),
     getRetrievalAdmitMinSimilarity(),
     getRetrievalAdmitOnExactCode(),
   ]);
 
-  const matches = await withTiming("match_chunks()", () =>
-    matchChunks({ orgId, queryEmbedding: embedding, queryText: question, matchCount })
-  );
+  const search = (docIds) =>
+    withTiming("match_chunks()", () => matchChunks({ orgId, queryEmbedding: embedding, queryText: question, matchCount, docIds }));
+
+  let matches = await search(equipment.docIds);
+  if (equipment.docIds && matches.length === 0) {
+    logger.info(`[retrieval] nothing in the ${equipment.docIds.length} document(s) for "${equipment.equipment.join(", ")}"; searching everything`);
+    matches = await search(null);
+  }
 
   const admission = decideAdmission({ matches, question, minSimilarity, admitOnExactCode });
   const candidateIds = matches.map((m) => m.chunkId);
 
-  if (!admission.admitted) return { chunks: [], admission, embedding, candidateIds };
+  if (!admission.admitted) return { chunks: [], admission, embedding, candidateIds, equipment };
 
   const texts = await getChunksByIds(candidateIds);
   const textByChunkId = new Map(texts.map((t) => [t.chunkId, t]));
@@ -89,6 +111,7 @@ export const retrieveRelevantChunks = async ({ question }) => {
       chunkId: chunk.chunkId,
       documentId: match.docId,
       pageNumber: chunk.pageFrom,
+      pageLabel: chunk.pageLabel,
       sectionPath: chunk.sectionPath,
       documentTitle: chunk.documentTitle,
       content: chunk.parentContent ?? chunk.content,
@@ -98,5 +121,5 @@ export const retrieveRelevantChunks = async ({ question }) => {
     });
   }
 
-  return { chunks, admission, embedding, candidateIds };
+  return { chunks, admission, embedding, candidateIds, equipment };
 };

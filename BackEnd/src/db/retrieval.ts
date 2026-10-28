@@ -24,6 +24,8 @@ export interface MatchChunksParams {
   boostModel?: string | null;
   boostLanguage?: string | null;
   sourceTypes?: string[] | null;
+  /** Hard filter: only these documents. Null searches every document. */
+  docIds?: string[] | null;
 }
 
 export const matchChunks = async ({
@@ -35,6 +37,7 @@ export const matchChunks = async ({
   boostModel = null,
   boostLanguage = null,
   sourceTypes = null,
+  docIds = null,
 }: MatchChunksParams): Promise<MatchedChunk[]> => {
   const { rows } = await pool.query(
     `select * from match_chunks(
@@ -45,7 +48,8 @@ export const matchChunks = async ({
        p_boost_vendor    => $5,
        p_boost_model     => $6,
        p_boost_language  => $7,
-       p_source_types    => $8)`,
+       p_source_types    => $8,
+       p_doc_ids         => $9::uuid[])`,
     [
       orgId,
       toVectorLiteral(queryEmbedding),
@@ -55,6 +59,7 @@ export const matchChunks = async ({
       boostModel,
       boostLanguage,
       sourceTypes,
+      docIds && docIds.length > 0 ? docIds : null,
     ],
   );
 

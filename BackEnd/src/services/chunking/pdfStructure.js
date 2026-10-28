@@ -215,6 +215,57 @@ const dropRunningHeadersAndFooters = (pageLines, pageHeights) => {
   );
 };
 
+// ---- printed page labels ---------------------------------------------------
+//
+// The number printed on a page ("Page 8 of 104") is often not its position in
+// the file (PDF page 16, after the cover and contents). A technician holding the
+// printed manual looks for the printed one, so it is read here, from the same
+// header/footer band the running-header filter above throws away.
+//
+// "Page 8" / "Page 8 of 104" anywhere in the band is trusted on sight. A bare
+// "8" is not: a figure callout or a measurement near the edge looks the same.
+// Bare numbers are kept only when they run in step with the page order (the
+// same offset from the page index on most of the pages that have one).
+// A label can repeat inside one file (an English and a French copy of the same
+// guide both print "Page 1"), which is why citations show it beside the PDF
+// page, never instead of it.
+
+// English, Spanish, French and German manuals are bundled into one PDF: "Page 1 sur 4", "Página 4 de 4".
+const PAGE_WORD_LABEL_RE = /(?:^|[^\p{L}])(?:page|p[áa]gina|seite)\s+(\d{1,4})(?:\s*(?:of|de|sur|von|\/)\s*\d{1,4})?\b/iu;
+const BARE_LABEL_RE = /^(\d{1,4})(?:\s*(?:of|\/)\s*\d{1,4})?$/;
+
+const pageLabelsOf = (pageLines, pageHeights) => {
+  const found = pageLines.map((lines, i) => {
+    const height = pageHeights[i];
+    // y counts up from the bottom: ascending puts the footer first, lowest line first, then the header.
+    const band = lines.filter((l) => l.y < height * 0.07 || l.y > height * 0.93).sort((a, b) => a.y - b.y);
+    for (const line of band) {
+      const m = line.text.match(PAGE_WORD_LABEL_RE);
+      if (m) return { label: m[1], strong: true };
+    }
+    for (const line of band) {
+      const m = line.text.trim().match(BARE_LABEL_RE);
+      if (m) return { label: m[1], strong: false };
+    }
+    return null;
+  });
+
+  const offsets = new Map();
+  found.forEach((f, i) => {
+    if (f && !f.strong) offsets.set(i - Number(f.label), (offsets.get(i - Number(f.label)) ?? 0) + 1);
+  });
+  const weakCount = found.filter((f) => f && !f.strong).length;
+  const [bestOffset, bestCount] = [...offsets.entries()].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+  // At least three pages in step: on a one- or two-page drawing a lone edge number is a grid zone, not a page.
+  const bareTrusted = bestCount >= 3 && bestCount >= weakCount * 0.6;
+
+  return found.map((f, i) => {
+    if (!f) return null;
+    if (f.strong) return f.label;
+    return bareTrusted && i - Number(f.label) === bestOffset ? f.label : null;
+  });
+};
+
 // ---- lines -> classified lines ---------------------------------------------
 
 const isEndOfSentence = (text) => /[.!?]$/.test(text.replace(/:$/, ""));
@@ -496,7 +547,7 @@ const dominantSize = (lines, fallback) => {
 };
 
 /**
- * @returns {Promise<{ totalPages: number, pages: {pageNumber:number, hasVisualContent:boolean, hasText:boolean}[], blocks: object[] }>}
+ * @returns {Promise<{ totalPages: number, pages: {pageNumber:number, pageLabel:string|null, hasVisualContent:boolean, hasText:boolean}[], blocks: object[] }>}
  */
 export const extractDocumentBlocks = async (buffer) => {
   const pdf = await getDocument({
@@ -532,6 +583,10 @@ export const extractDocumentBlocks = async (buffer) => {
       });
       page.cleanup();
     }
+
+    // Read before the band is dropped: the printed page number lives in it.
+    const labels = pageLabelsOf(pageLines, pageHeights);
+    pages.forEach((p, i) => (p.pageLabel = labels[i]));
 
     const lines = dropRunningHeadersAndFooters(pageLines, pageHeights).flat();
 

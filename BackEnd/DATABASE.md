@@ -215,9 +215,20 @@ lexical_rank, dense_similarity, score`.
 - **Vendor, model and language are boosts, not filters.** A wrong guess from
   frame extraction lowers a row's rank but never removes it. Only tenant,
   liveness and source type filter.
+- **Exception: `p_doc_ids` is a hard filter** (migration 0820). When the
+  question names equipment ("AD Plus2.0"), `equipmentFilter.service.js`
+  extracts the name and matches it against live document titles; retrieval
+  then searches only those documents. If that finds nothing, it searches
+  everything again. Off with `retrieval.equipment_filter_enabled = false`.
 - **Web snapshots are excluded unless asked for** (`p_source_types => '{web}'`).
 - Send the **parent** chunk (`parent_chunk_id`) to the model. The child chunk
   was only the match.
+- **Pages have two numbers.** `page_from` / `page_number` is the page's place in
+  the PDF; `kb_document_page.page_label` (migration 0830) is the number printed
+  on it ("Page 8 of 104" on PDF page 16), read at ingestion, null when none.
+  Retrieval and `(Page N)` citations use the PDF page; people are shown both
+  when they differ. Documents ingested before 0830:
+  `node --import tsx scripts/backfill-page-labels.mjs`.
 - Log every returned row to `turn_retrieval`. (Not built yet: it needs a
   `chat_message` row, and the backend has no chat sessions until auth exists.)
 

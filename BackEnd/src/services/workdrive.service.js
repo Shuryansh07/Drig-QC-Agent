@@ -165,6 +165,34 @@ export const uploadOriginalFile = async (buffer, fileName, documentId) => {
   );
 };
 
+const DOWNLOAD_BASE = process.env.ZOHO_WORKDRIVE_DOWNLOAD || "https://download.zoho.com/v1/workdrive/download";
+
+const downloadAttempt = (fileId, accessToken) =>
+  fetchWithTimeout(`${DOWNLOAD_BASE}/${fileId}`, { headers: { Authorization: `Zoho-oauthtoken ${accessToken}` } });
+
+/**
+ * The archived original's bytes. Ingestion deletes its own copy once a document
+ * is complete, so WorkDrive is the only place to re-read a file from (used by
+ * the page-label backfill, scripts/backfill-page-labels.mjs).
+ */
+export const downloadOriginalFile = async (fileId) =>
+  retryWithBackoff(
+    `WorkDrive download (${fileId})`,
+    async () => {
+      let response = await withTiming(`WorkDrive download (${fileId})`, async () => downloadAttempt(fileId, await getAccessToken()));
+      if (response.status === 401) {
+        logger.warn("WorkDrive download got 401 (stale token) — refreshing and retrying once");
+        response = await downloadAttempt(fileId, await getAccessToken(true));
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw Object.assign(new Error(`WorkDrive download failed (${response.status}): ${text.slice(0, 200)}`), { status: response.status });
+      }
+      return Buffer.from(await response.arrayBuffer());
+    },
+    { maxRetries: MAX_RETRIES }
+  );
+
 const trashAttempt = (fileId, accessToken) =>
   fetchWithTimeout(`${API_BASE}/files/${fileId}`, {
     method: "PATCH",

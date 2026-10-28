@@ -20,6 +20,12 @@ import { buildMessages, loadEvidenceImages, modelFor } from "./answerGeneration.
  *   100% accurate and still send a technician onto a live circuit if the one
  *   safety-relevant line from the source never made it into the answer.
  *
+ *   Check 6 also covers claims that are not measurements: a step, qualifier or
+ *   consequence the evidence never gives ("refit the panel" when the source only
+ *   shows removing it; "will void liability" for "we are not liable"). Limited
+ *   to measurements, it passed answers whose numbers were right but whose
+ *   procedure was partly made up.
+ *
  * Checks 6 and 7 are judgment calls, so they share one model call rather than two
  * — same evidence, same read, half the latency and cost of asking twice.
  *
@@ -48,7 +54,10 @@ const SECTION_CITATION_RE = /\(Section:\s*([^)]+)\)/gi;
 
 /** Check 5. Synchronous, free — every retrieved chunk's real location vs. what the answer actually cited. */
 export const validateCitations = ({ answer, chunks }) => {
-  const validPages = new Set(chunks.map((c) => c.pageNumber).filter((p) => p !== null && p !== undefined));
+  // A page may be cited by its place in the file or by the number printed on it ("printed page 8").
+  const validPages = new Set(
+    chunks.flatMap((c) => [c.pageNumber, c.pageLabel ? Number(c.pageLabel) : null]).filter((p) => p !== null && p !== undefined && !Number.isNaN(p))
+  );
   const validSections = new Set(
     chunks.map((c) => c.sectionPath).filter(Boolean).map((s) => s.trim().toLowerCase())
   );
@@ -80,17 +89,25 @@ export const validateCitations = ({ answer, chunks }) => {
 
 const VERIFY_SYSTEM_PROMPT = `You are auditing a technical answer against the evidence it was supposedly generated from. You are NOT writing an answer — a separate step already wrote it. Your only job is to check it.
 
-Check two things, independently:
+Check three things, independently:
 
 1. DETAIL ACCURACY — every wire colour, pin/terminal number, fuse rating, torque value, voltage, or other specific measurement stated in the answer must appear, with the same value, in the evidence below (including any attached images). Flag anything stated that you cannot verify against the evidence, or that contradicts it.
 
 2. SAFETY PRESERVATION — if the evidence contains a warning, caution, disconnect instruction, or isolation step relevant to what the answer describes, its substance must appear in the answer. Flag any such warning, disconnect, or isolation step that is present in the evidence but missing from the answer.
 
-Do not flag paraphrasing, style, or an omitted detail that is neither a specific measurement nor safety-relevant. Only flag a real mismatch or a real missing safety step.
+3. UNSUPPORTED CLAIMS — every instruction, step, requirement, condition and consequence in the answer must be supported by the evidence (text or attached images). Flag:
+   - a step the evidence does not contain or show, even a sensible one ("refit the cover and tighten the screws" when the evidence only shows removing it);
+   - a qualifier the evidence does not give ("optional", "if needed", "only one is required");
+   - a requirement or consequence stated more strongly or differently than the evidence ("will void the warranty" when the evidence says only "we are not liable").
+   A step shown in an attached image counts as supported. A sentence that only introduces, links or summarises supported content, with no new instruction or fact, is fine.
+
+Do not flag paraphrasing, style, or an omitted detail that is neither a specific measurement nor safety-relevant. Only flag a real mismatch, a real missing safety step, or a real unsupported claim.
+
+Work through the answer before deciding: list every instruction, step and factual claim in it, one entry each (every numbered step separately, including the last one and any closing advice), and say whether the evidence supports it. Then give the verdict.
 
 Respond with ONLY a JSON object, no other text:
-{"passed": boolean, "violations": [{"type": "detail_mismatch" | "dropped_warning", "description": "one sentence"}]}
-"passed" must be true only when "violations" is empty.`;
+{"claims": [{"claim": "short quote or summary", "supported": boolean}], "passed": boolean, "violations": [{"type": "detail_mismatch" | "dropped_warning" | "unsupported_claim", "description": "one sentence"}]}
+Every claim with "supported": false must also appear in "violations". "passed" must be true only when "violations" is empty.`;
 
 /** Same evidence formatting generateAnswer() used, system prompt swapped for the auditor's, with the answer appended to check. */
 const buildVerificationMessages = ({ question, answer, chunks, images }) => {
@@ -119,7 +136,13 @@ const verifyDetailsAndWarnings = async ({ question, answer, chunks, images }) =>
 
   const raw = response.choices?.[0]?.message?.content;
   const parsed = JSON.parse(raw); // malformed JSON is caught by the caller and treated as a failed check
-  return Array.isArray(parsed.violations) ? parsed.violations : [];
+  const violations = Array.isArray(parsed.violations) ? parsed.violations : [];
+  if (violations.length > 0) return violations;
+  // The claim walk is what the verdict rests on: a claim marked unsupported fails the answer even if the
+  // model forgot to copy it into "violations".
+  return (Array.isArray(parsed.claims) ? parsed.claims : [])
+    .filter((c) => c?.supported === false)
+    .map((c) => ({ type: "unsupported_claim", description: `Not supported by the evidence: ${c.claim}` }));
 };
 
 /**

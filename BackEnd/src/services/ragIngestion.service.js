@@ -106,7 +106,7 @@ const runRagStage = async ({ document, buffer, fileName, log, checkpoint }) => {
   await documentPages.ensurePages(docId, pages.map((p) => p.pageNumber));
   await documentPages.resetPagesForRun(
     docId,
-    pages.map((p) => ({ pageNumber: p.pageNumber, hasVisual: p.hasVisualContent }))
+    pages.map((p) => ({ pageNumber: p.pageNumber, hasVisual: p.hasVisualContent, pageLabel: p.pageLabel ?? null }))
   );
 
   // Diagrams, photos, charts and tables: screenshot -> vision model -> description text,

@@ -14,6 +14,8 @@ export interface WireSource {
   document_title?: string | null;
   /** Null for sources with no pages (Word documents), which are cited by section. */
   page_number: number | null;
+  /** The number printed on that page, when it shows one and the server knows it. */
+  page_label?: string | null;
   section_path: string | null;
 }
 

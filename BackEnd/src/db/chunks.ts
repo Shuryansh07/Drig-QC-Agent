@@ -151,6 +151,8 @@ export interface ChunkText {
   chunkId: string;
   docId: string;
   pageFrom: number | null;
+  /** The number printed on that page ("8" for PDF page 16), when it shows one. */
+  pageLabel: string | null;
   sectionPath: string | null;
   documentTitle: string;
   /** The matched chunk's own text (a child). */
@@ -254,10 +256,11 @@ export const getChunksByIds = async (chunkIds: string[]): Promise<ChunkText[]> =
   if (chunkIds.length === 0) return [];
   const { rows } = await pool.query(
     `select c.chunk_id, c.doc_id, c.page_from, c.section_path, c.text, c.parent_chunk_id, p.text as parent_text, c.metadata,
-            d.title as document_title
+            d.title as document_title, pg.page_label
        from kb_chunk c
        join kb_document d on d.doc_id = c.doc_id
        left join kb_chunk p on p.chunk_id = c.parent_chunk_id
+       left join kb_document_page pg on pg.doc_id = c.doc_id and pg.page_number = c.page_from
       where c.chunk_id = any($1)`,
     [chunkIds]
   );
@@ -265,6 +268,7 @@ export const getChunksByIds = async (chunkIds: string[]): Promise<ChunkText[]> =
     chunkId: r.chunk_id,
     docId: r.doc_id,
     pageFrom: r.page_from,
+    pageLabel: r.page_label ?? null,
     sectionPath: r.section_path,
     documentTitle: r.document_title,
     content: r.text,
