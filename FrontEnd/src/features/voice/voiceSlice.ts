@@ -10,6 +10,13 @@ export type RecorderStatus =
   | "preview"
   | "error";
 
+/** The answer being read aloud. One at a time, across the whole conversation. */
+export interface TtsPlayback {
+  turnId: string;
+  /** True while the audio is being fetched, before it starts playing. */
+  loading: boolean;
+}
+
 export interface VoiceState {
   status: RecorderStatus;
   /** Milliseconds since recording started. Drives the waveform and the timer. */
@@ -23,7 +30,7 @@ export interface VoiceState {
    * fail silently on every iPhone, so the chosen type is recorded here.
    */
   mimeType: string | null;
-  ttsPlaying: boolean;
+  tts: TtsPlayback | null;
   error: string | null;
 }
 
@@ -35,7 +42,7 @@ const initialState: VoiceState = {
   levels: [],
   transcript: null,
   mimeType: null,
-  ttsPlaying: false,
+  tts: null,
   error: null,
 };
 
@@ -76,15 +83,16 @@ const voiceSlice = createSlice({
     transcriptEdited(state, action: PayloadAction<string>) {
       state.transcript = action.payload;
     },
-    ttsPlaybackChanged(state, action: PayloadAction<boolean>) {
-      state.ttsPlaying = action.payload;
+    ttsPlaybackChanged(state, action: PayloadAction<TtsPlayback | null>) {
+      state.tts = action.payload;
     },
     failed(state, action: PayloadAction<string>) {
       state.status = "error";
       state.error = action.payload;
     },
-    reset() {
-      return initialState;
+    /** Clears the recorder. Read-aloud is separate and keeps its own state. */
+    reset(state) {
+      return { ...initialState, tts: state.tts };
     },
   },
 });

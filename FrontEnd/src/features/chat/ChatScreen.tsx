@@ -14,6 +14,7 @@ import { JobContextCard } from "@/features/chat/components/JobContextCard";
 import { jobFromSearch, jobSuggestions } from "@/features/chat/lib/jobContext";
 import { SourceDrawer } from "@/features/citations/components/SourceDrawer";
 import { HandoffSheet } from "@/features/handoff/components/HandoffSheet";
+import { useTTSPlayback } from "@/features/voice/hooks/useTTSPlayback";
 import { PageShell } from "@/components/common/PageShell";
 import { Button } from "@/components/ui/button";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -48,6 +49,14 @@ export default function ChatScreen() {
   const { data: conversation } = useConversation(sessionId);
   const { send, cancel } = useChatStream(sessionId, job);
   const recordResolution = useRecordResolution(sessionId);
+
+  // Read-aloud ends with the chat, and when recording starts: the microphone would hear it.
+  const { stop: stopReading } = useTTSPlayback();
+  const recording = useAppSelector((s) => s.voice.status === "recording");
+  useEffect(() => stopReading, [stopReading, sessionId]);
+  useEffect(() => {
+    if (recording) stopReading();
+  }, [recording, stopReading]);
 
   const openEngineer = useCallback(
     () => dispatch(uiActions.handoffSheetToggled(true)),

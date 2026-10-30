@@ -6,6 +6,8 @@ import { NotCoveredCard } from "@/features/chat/components/NotCoveredCard";
 import { ConflictCard } from "@/features/chat/components/ConflictCard";
 import { ResolutionBar } from "@/features/chat/components/ResolutionBar";
 import { AssistantMessage } from "@/features/chat/components/AssistantMessage";
+import { SpeakButton } from "@/features/voice/components/SpeakButton";
+import { speechTextFor } from "@/features/chat/lib/speech";
 
 interface TurnViewProps {
   turn: Turn;
@@ -32,6 +34,8 @@ export function TurnView({
       </div>
     );
   }
+
+  const speechText = speechTextFor(turn);
 
   return (
     <AssistantMessage>
@@ -63,6 +67,8 @@ export function TurnView({
           onOpenCitation={onOpenCitation}
         />
       ) : null}
+
+      {speechText ? <SpeakButton turnId={turn.turnId} text={speechText} /> : null}
 
       {turn.durationMs !== undefined ? (
         <p className="text-muted-foreground text-sm" role="status">

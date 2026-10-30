@@ -1,6 +1,6 @@
 import express from "express";
 import upload from "../middleware/audio.middleware.js";
-import { transcribeAudioFile } from "../controllers/audio.controller.js";
+import { speakText, transcribeAudioFile } from "../controllers/audio.controller.js";
 
 const router = express.Router();
 
@@ -12,5 +12,6 @@ const acceptAudio = (req, res, next) =>
   });
 
 router.post("/transcribe", acceptAudio, transcribeAudioFile);
+router.post("/speech", speakText);
 
 export default router;
