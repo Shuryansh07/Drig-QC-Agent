@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "targets": [],
+    "ignore": [],
+    "source": "functions"
+  },
+  "client": {
+    "source": "client"
+  }
+}

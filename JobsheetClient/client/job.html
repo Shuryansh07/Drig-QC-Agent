@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Job details · DRIG Jobsheet</title>
+    <link rel="stylesheet" href="main.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">D</span>
+        <div>
+          <h1>Jobsheet</h1>
+          <p class="subtitle">Job details</p>
+        </div>
+      </div>
+      <a id="chatbot-link" class="chatbot-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4z" /></svg>
+        Open chatbot
+      </a>
+    </header>
+
+    <main>
+      <a class="back-link" href="index.html">← All jobs</a>
+
+      <!-- Filled by job.js from the ?id= in the address. -->
+      <article id="job" class="job-detail" hidden>
+        <div class="detail-head">
+          <div>
+            <p id="job-id" class="detail-id"></p>
+            <h2 id="job-name" class="detail-title"></h2>
+          </div>
+          <div id="done-slot" class="detail-done"></div>
+        </div>
+
+        <section class="card address-card" aria-labelledby="address-heading">
+          <h3 id="address-heading">Installation address</h3>
+          <p class="address-hint">Where the vehicle is.</p>
+          <address id="job-address"></address>
+          <div class="address-actions">
+            <a id="map-link" class="button" target="_blank" rel="noopener">Open in Maps</a>
+            <button id="copy-address" class="button button-quiet" type="button">Copy address</button>
+          </div>
+        </section>
+
+        <div class="detail-grid">
+          <section class="card" aria-labelledby="vehicle-heading">
+            <h3 id="vehicle-heading">Vehicle</h3>
+            <dl>
+              <dt>Car</dt>
+              <dd id="job-car"></dd>
+              <dt>Plate</dt>
+              <dd id="job-plate"></dd>
+              <dt>VIN</dt>
+              <dd id="job-vin" class="mono"></dd>
+            </dl>
+          </section>
+
+          <section class="card" aria-labelledby="job-heading">
+            <h3 id="job-heading">Job</h3>
+            <dl>
+              <dt>Equipment</dt>
+              <dd id="job-equipment"></dd>
+              <dt>Scheduled</dt>
+              <dd id="job-scheduled"></dd>
+              <dt>Expected time</dt>
+              <dd id="job-duration"></dd>
+              <dt>Customer</dt>
+              <dd id="job-customer"></dd>
+              <dt>Contact</dt>
+              <dd id="job-contact"></dd>
+            </dl>
+          </section>
+        </div>
+
+        <section class="card" aria-labelledby="notes-heading">
+          <h3 id="notes-heading">Notes</h3>
+          <p id="job-notes"></p>
+        </section>
+
+        <section class="card help-card">
+          <div>
+            <h3>Stuck on this install?</h3>
+            <p>Ask the DRIG chatbot about the <span id="help-equipment"></span> or the <span id="help-car"></span>.</p>
+          </div>
+          <a id="chatbot-link-help" class="chatbot-link" href="#">Ask the chatbot</a>
+        </section>
+      </article>
+
+      <div id="not-found" class="card" hidden>
+        <h2 class="detail-title">Job not found</h2>
+        <p>There is no job with that number. Go back to the list and pick one.</p>
+      </div>
+    </main>
+
+    <!-- The chatbot, embedded: a side panel on desktop, full screen on a phone. Loaded on first open. -->
+    <aside id="chat-panel" class="chat-panel" aria-label="DRIG chatbot" hidden>
+      <div class="chat-panel-head">
+        <strong>DRIG chatbot</strong>
+        <div class="chat-panel-actions">
+          <a id="chat-newtab" class="button button-quiet button-small" target="_blank" rel="noopener">Open in new tab</a>
+          <button id="chat-close" class="button button-small" type="button">Back to job</button>
+        </div>
+      </div>
+      <iframe id="chat-frame" title="DRIG chatbot" allow="microphone; clipboard-write"></iframe>
+    </aside>
+
+    <script src="data.js"></script>
+    <script src="job.js"></script>
+    <script src="chat-panel.js"></script>
+  </body>
+</html>

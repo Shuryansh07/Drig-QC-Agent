@@ -90,12 +90,14 @@ export const decideAdmission = ({ matches, question, minSimilarity, admitOnExact
  *   `chunks` is empty whenever the gate refuses, so a caller that forgets to
  *   check `admission` still cannot generate from rejected material.
  */
-export const retrieveRelevantChunks = async ({ question }) => {
+export const retrieveRelevantChunks = async ({ question, jobEquipment = [] }) => {
   const { orgId } = await getDefaultOrg();
   const filterEnabled = await getRetrievalEquipmentFilterEnabled().catch(() => true);
   const [embedding, equipment] = await Promise.all([
     generateEmbedding(question),
-    filterEnabled ? withTiming("equipment filter", () => resolveEquipmentFilter(question)) : { equipment: [], docIds: null },
+    filterEnabled
+      ? withTiming("equipment filter", () => resolveEquipmentFilter(question, jobEquipment))
+      : { equipment: [], docIds: null, from: null },
   ]);
   const [matchCount, minSimilarity, admitOnExactCode] = await Promise.all([
     getRetrievalMatchCount(),

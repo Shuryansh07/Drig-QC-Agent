@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from "react";
-import { useParams } from "react-router";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppDispatch, useAppSelector } from "@/app/hooks";
 import { chatActions } from "@/features/chat/chatSlice";
@@ -10,6 +10,8 @@ import { useRecordResolution } from "@/features/chat/api/mutations";
 import { TurnView } from "@/features/chat/components/TurnView";
 import { StreamingTurnView } from "@/features/chat/components/StreamingTurnView";
 import { ChatComposer } from "@/features/chat/components/ChatComposer";
+import { JobContextCard } from "@/features/chat/components/JobContextCard";
+import { jobFromSearch, jobSuggestions } from "@/features/chat/lib/jobContext";
 import { SourceDrawer } from "@/features/citations/components/SourceDrawer";
 import { HandoffSheet } from "@/features/handoff/components/HandoffSheet";
 import { PageShell } from "@/components/common/PageShell";
@@ -38,8 +40,13 @@ export default function ChatScreen() {
   const partialText = useAppSelector((s) => s.chat.partialText);
   const stepCount = useAppSelector((s) => s.chat.steps.length);
 
+  // Opened from the jobsheet: the job's car and equipment, carried in the address.
+  const [searchParams] = useSearchParams();
+  const job = useMemo(() => jobFromSearch(searchParams), [searchParams]);
+  const suggestions = job ? jobSuggestions(job) : SUGGESTIONS;
+
   const { data: conversation } = useConversation(sessionId);
-  const { send, cancel } = useChatStream(sessionId);
+  const { send, cancel } = useChatStream(sessionId, job);
   const recordResolution = useRecordResolution(sessionId);
 
   const openEngineer = useCallback(
@@ -118,16 +125,22 @@ export default function ChatScreen() {
       }
     >
       {turns.length === 0 && streaming === "idle" ? (
-        <div className="flex flex-col items-center gap-8 pt-[12vh] text-center">
+        <div className={job ? "flex flex-col items-center gap-6 pt-[6vh] text-center" : "flex flex-col items-center gap-8 pt-[12vh] text-center"}>
           <div className="space-y-2">
-            <h1 className="text-title font-semibold tracking-tight text-balance">What can I help with?</h1>
+            <h1 className="text-title font-semibold tracking-tight text-balance">
+              {job ? "What do you need for this job?" : "What can I help with?"}
+            </h1>
             <p className="text-muted-foreground text-body mx-auto max-w-[42ch]">
-              Tell me the vehicle and what it's doing. Type it or say it out loud.
+              {job
+                ? "I already have the vehicle and equipment. Type the question or say it out loud."
+                : "Tell me the vehicle and what it's doing. Type it or say it out loud."}
             </p>
           </div>
 
+          {job ? <JobContextCard job={job} /> : null}
+
           <div className="flex flex-wrap justify-center gap-2">
-            {SUGGESTIONS.map((suggestion) => (
+            {suggestions.map((suggestion) => (
               <Button
                 key={suggestion}
                 variant="outline"
@@ -142,6 +155,8 @@ export default function ChatScreen() {
       ) : null}
 
       <div className="space-y-8">
+        {/* Once the chat has started, the job stays in view above it. */}
+        {job && turns.length > 0 ? <JobContextCard job={job} /> : null}
         {turns.map((turn) => (
           <TurnView
             key={turn.turnId}

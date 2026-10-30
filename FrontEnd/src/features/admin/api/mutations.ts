@@ -104,3 +104,21 @@ export function useDeleteDocument() {
     onError: (err) => logger.error("[admin delete] failed", err),
   });
 }
+
+/**
+ * POST /api/conversations/unanswered/:turnId/answer — an admin answers a question the assistant could not.
+ * The server embeds the question and saves it to the FAQ; the next technician asking it gets this answer.
+ */
+export function useAnswerUnanswered() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ turnId, question, answer }: { turnId: string; question: string; answer: string }) =>
+      apiFetch<{ ok: true; faq_id: string; created: boolean; gaps_removed: number }>(`/conversations/unanswered/${turnId}/answer`, {
+        method: "POST",
+        body: JSON.stringify({ question, answer }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "unanswered"] }),
+    onError: (err) => logger.error("[admin answer] failed", err),
+  });
+}

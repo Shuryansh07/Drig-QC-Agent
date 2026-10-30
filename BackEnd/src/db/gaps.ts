@@ -29,3 +29,14 @@ export const recordGap = async ({
     [orgId, workflowId, stripNul(queryText).slice(0, 2000), toVectorLiteral(queryEmbedding), retrievedIds, reason]
   );
 };
+
+/** An admin answered this question: deletes the open gaps asking the same thing. Returns how many. */
+export const removeAnsweredGaps = async (queryEmbedding: number[], minSimilarity: number): Promise<number> => {
+  const { orgId } = await getDefaultOrg();
+  const { rows } = await pool.query(`select remove_answered_gaps($1, $2::extensions.vector, $3) as n`, [
+    orgId,
+    toVectorLiteral(queryEmbedding),
+    minSimilarity,
+  ]);
+  return rows[0]?.n ?? 0;
+};

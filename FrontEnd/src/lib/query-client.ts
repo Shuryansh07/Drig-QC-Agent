@@ -25,5 +25,7 @@ export const queryKeys = {
   adminDocuments: (page?: number, search?: string, collection?: string) =>
     page === undefined ? (["admin", "documents"] as const) : (["admin", "documents", page, search ?? "", collection ?? "all"] as const),
   wiringImports: () => ["admin", "wiring-imports"] as const,
+  unanswered: (page: number, search: string, kind: string) => ["admin", "unanswered", page, search, kind] as const,
   vehicleOptions: (make?: string) => ["wiring", "vehicle-options", make ?? ""] as const,
+  jobContext: (equipment: string, car: string) => ["chat", "job-context", equipment, car] as const,
 } as const;

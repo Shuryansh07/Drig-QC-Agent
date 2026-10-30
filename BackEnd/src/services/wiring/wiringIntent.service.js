@@ -96,3 +96,19 @@ export const detectWiringIntent = async (question) => {
 
 export const missingVehicleFields = (intent) =>
   [!intent.year && "year", !intent.make && "make", !intent.model && "model", !intent.startType && "startType"].filter(Boolean);
+
+/**
+ * A chat opened from a jobsheet knows the vehicle ("2018 Chevrolet Equinox"). Fills the year, make and model
+ * the question left out, so the technician is not asked for them again; anything the question did say wins.
+ * The start type is never on the jobsheet, so it is still asked for.
+ */
+export const withJobVehicle = (intent, car) => {
+  const match = typeof car === "string" ? car.trim().match(/^((?:19|20)\d{2})\s+(\S+)\s+(.+)$/) : null;
+  if (!intent || !match) return intent;
+  return {
+    ...intent,
+    year: intent.year ?? toYear(match[1]),
+    make: intent.make ?? clean(match[2]),
+    model: intent.model ?? clean(match[3]),
+  };
+};

@@ -1,5 +1,9 @@
 {
   "enabledPlugins": {
     "aws-core@claude-plugins-official": true
+  },
+  "attribution":{
+    "commit": "",
+    "pr": ""
   }
 }

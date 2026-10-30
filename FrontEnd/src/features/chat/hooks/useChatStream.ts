@@ -13,6 +13,7 @@ import { uuid } from "@/lib/uuid";
 import { buildAnswerSteps } from "@/features/chat/lib/procedure";
 import { pageCaption } from "@/lib/pageCaption";
 import type { AnswerImage, Citation, ClarifyRequest, Conversation, NotCoveredInfo, Turn } from "@/types/contracts";
+import type { JobContext } from "@/features/chat/lib/jobContext";
 // import { uuid } from "@/lib/uuid";
 
 // No auth/tenant selection UI exists yet (AuthProvider is a stub — see
@@ -107,7 +108,8 @@ export interface ClarificationAnswer {
   skipped: boolean;
 }
 
-export function useChatStream(sessionId: string) {
+/** `job`: the jobsheet this chat was opened from; the server narrows the manuals to its equipment. */
+export function useChatStream(sessionId: string, job: JobContext | null = null) {
   const dispatch = useAppDispatch();
   const queryClient = useQueryClient();
   const abortRef = useRef<AbortController | null>(null);
@@ -216,8 +218,9 @@ export function useChatStream(sessionId: string) {
                   turn_id: technicianTurnId,
                   agent_turn_id: agentTurnId,
                   display_text: trimmed,
+                  job,
                 }
-              : { customer_id: CUSTOMER_ID, question: trimmed, history, session_id: sessionId, turn_id: technicianTurnId, agent_turn_id: agentTurnId },
+              : { customer_id: CUSTOMER_ID, question: trimmed, history, session_id: sessionId, turn_id: technicianTurnId, agent_turn_id: agentTurnId, job },
           ),
           signal: ctrl.signal,
         });
@@ -302,7 +305,7 @@ export function useChatStream(sessionId: string) {
         if (frame) cancelAnimationFrame(frame);
       }
     },
-    [sessionId, dispatch, queryClient],
+    [sessionId, job, dispatch, queryClient],
   );
 
   const cancel = useCallback(() => {

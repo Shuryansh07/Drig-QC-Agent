@@ -10,6 +10,8 @@ export interface FaqMatch {
   answer: string;
   sourceChunkIds: string[];
   citations: unknown[];
+  /** "admin": written in the admin panel, with no source passages; the text is the answer itself. */
+  source: "technician" | "admin";
   similarity: number;
 }
 
@@ -27,6 +29,7 @@ export const matchFaq = async (embedding: number[], matchCount: number, minSimil
     answer: r.answer,
     sourceChunkIds: r.source_chunk_ids ?? [],
     citations: r.citations ?? [],
+    source: r.source ?? "technician",
     similarity: r.similarity,
   }));
 };
@@ -51,6 +54,33 @@ export const addFaq = async (faq: {
     `insert into faq_entry (org_id, question, answer, embedding, source_chunk_ids, citations, source_turn_id)
      values ($1, $2, $3, $4::extensions.vector, $5::uuid[], $6, $7) returning faq_id`,
     [orgId, faq.question, faq.answer, toVectorLiteral(faq.embedding), faq.sourceChunkIds, JSON.stringify(faq.citations), faq.sourceTurnId]
+  );
+  return { faqId: rows[0].faq_id, created: true };
+};
+
+/**
+ * Saves an admin's answer to a question. A near-identical admin answer is replaced rather than
+ * duplicated; a technician-resolved entry is left alone (the admin's answer will rank with it).
+ */
+export const addAdminFaq = async (faq: {
+  question: string;
+  answer: string;
+  embedding: number[];
+  dedupeSimilarity: number;
+}): Promise<{ faqId: string; created: boolean }> => {
+  const nearest = (await matchFaq(faq.embedding, 5, faq.dedupeSimilarity)).find((m) => m.source === "admin");
+  if (nearest) {
+    await pool.query(
+      `update faq_entry set question = $2, answer = $3, embedding = $4::extensions.vector, active = true where faq_id = $1`,
+      [nearest.faqId, faq.question, faq.answer, toVectorLiteral(faq.embedding)]
+    );
+    return { faqId: nearest.faqId, created: false };
+  }
+  const { orgId } = await getDefaultOrg();
+  const { rows } = await pool.query(
+    `insert into faq_entry (org_id, question, answer, embedding, source)
+     values ($1, $2, $3, $4::extensions.vector, 'admin') returning faq_id`,
+    [orgId, faq.question, faq.answer, toVectorLiteral(faq.embedding)]
   );
   return { faqId: rows[0].faq_id, created: true };
 };

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { createBrowserRouter, Navigate, type RouteObject } from "react-router";
+import { createBrowserRouter, Navigate, useLocation, type RouteObject } from "react-router";
 import { SkeletonRouteFallback } from "@/components/common/SkeletonRouteFallback";
 import { uuid } from "@/lib/uuid";
 
@@ -18,9 +18,11 @@ function lazyRoute(element: React.ReactNode) {
 }
 
 /** A fresh session id per cold start. Sessions are cheap; inheriting the
- *  previous job's vehicle is not (BACKEND_MEMORY.md §8). */
+ *  previous job's vehicle is not (BACKEND_MEMORY.md §8). A job passed in the
+ *  address (?job=&car=&equipment=, from the jobsheet) goes with it. */
 function NewSession() {
-  return <Navigate to={`/s/${uuid()}`} replace />;
+  const { search } = useLocation();
+  return <Navigate to={`/s/${uuid()}${search}`} replace />;
 }
 
 const routes: RouteObject[] = [

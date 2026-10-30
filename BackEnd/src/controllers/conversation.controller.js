@@ -1,5 +1,5 @@
-import { getConversation, setResolution, isUuid } from "../db/chat.js";
-import { recordResolution } from "../services/faq.service.js";
+import { getConversation, setResolution, isUuid, listUnanswered, markTurnAnswered } from "../db/chat.js";
+import { recordResolution, recordAdminAnswer } from "../services/faq.service.js";
 import * as storage from "../services/storage.service.js";
 import { signUrl, BUCKET_IDS } from "../services/wiring/wiringBuckets.js";
 import { logger } from "../utils/logger.js";
@@ -77,5 +77,69 @@ export const recordResolutionController = async (req, res) => {
   } catch (error) {
     logger.error("[chat] could not record resolution", error);
     return res.status(500).json({ success: false, message: "Could not save the rating" });
+  }
+};
+
+const MISS_KINDS = new Set(["not_found", "no_answer", "not_resolved", "no_reply"]);
+const MAX_PAGE_SIZE = 100;
+
+/**
+ * GET /api/conversations/unanswered?kind=&q=&page=&page_size= — for the admin panel: the questions
+ * technicians asked that got no answer, so the missing manual (or section) can be added.
+ */
+export const listUnansweredController = async (req, res) => {
+  const kind = MISS_KINDS.has(req.query.kind) ? req.query.kind : null;
+  const search = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim().slice(0, 200) : null;
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.page_size, 10) || 20));
+  try {
+    const { items, total, counts } = await listUnanswered({ kind, search, limit: pageSize, offset: (page - 1) * pageSize });
+    return res.status(200).json({
+      questions: items.map((q) => ({
+        turn_id: q.turnId,
+        session_id: q.sessionId,
+        kind: q.kind,
+        question: q.question,
+        asked: q.asked,
+        reply: q.reply,
+        created_at: q.createdAt.toISOString(),
+      })),
+      counts,
+      page,
+      page_size: pageSize,
+      total,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
+    });
+  } catch (error) {
+    logger.error("[chat] could not list unanswered questions", error);
+    return res.status(500).json({ success: false, message: "Could not load the unanswered questions" });
+  }
+};
+
+const MAX_QUESTION_CHARS = 1000;
+const MAX_ANSWER_CHARS = 8000;
+
+/**
+ * POST /api/conversations/unanswered/:turnId/answer { question, answer } — an admin answers a question
+ * from the list. Saved to the FAQ with the question embedded; the turn then leaves the list.
+ */
+export const answerUnansweredController = async (req, res) => {
+  const { turnId } = req.params;
+  const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+  const answer = typeof req.body?.answer === "string" ? req.body.answer.trim() : "";
+  if (!isUuid(turnId)) return res.status(400).json({ success: false, message: "turnId must be a uuid" });
+  if (!question || question.length > MAX_QUESTION_CHARS) {
+    return res.status(400).json({ success: false, message: `question is required (at most ${MAX_QUESTION_CHARS} characters)` });
+  }
+  if (!answer || answer.length > MAX_ANSWER_CHARS) {
+    return res.status(400).json({ success: false, message: `answer is required (at most ${MAX_ANSWER_CHARS} characters)` });
+  }
+  try {
+    const { faqId, created, gapsRemoved } = await recordAdminAnswer({ question, answer });
+    if (!(await markTurnAnswered(turnId, faqId))) logger.warn(`[faq] admin answer saved, but turn ${turnId} was not found`);
+    return res.status(200).json({ ok: true, faq_id: faqId, created, gaps_removed: gapsRemoved });
+  } catch (error) {
+    logger.error("[faq] could not save the admin answer", error);
+    return res.status(500).json({ success: false, message: "Could not save the answer" });
   }
 };

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DRIG Jobsheet</title>
+    <link rel="stylesheet" href="main.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">D</span>
+        <div>
+          <h1>Jobsheet</h1>
+          <p class="subtitle">Today's installs</p>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div class="summary">
+        <p id="progress" class="progress" aria-live="polite"></p>
+        <div class="bar" aria-hidden="true"><span id="progress-bar"></span></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Job name</th>
+              <th scope="col">Car name</th>
+              <th scope="col">Equipment name</th>
+              <th scope="col" class="col-done">Mark as done</th>
+            </tr>
+          </thead>
+          <tbody id="jobs"></tbody>
+        </table>
+      </div>
+
+      <p class="note">Sample data. Open a job for its address and details. Progress is kept in this browser only.</p>
+    </main>
+
+    <script src="data.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { BookOpen, Cable, ShieldCheck } from "lucide-react";
+import { BookOpen, Cable, CircleHelp, ShieldCheck } from "lucide-react";
 import { PageShell } from "@/components/common/PageShell";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ManualsPanel } from "./components/ManualsPanel";
 import { WiringGuidePanel } from "./components/WiringGuidePanel";
+import { UnansweredPanel } from "./components/UnansweredPanel";
 
-type Section = "drig" | "wiring" | "general";
+type Section = "drig" | "wiring" | "general" | "unanswered";
 
 const SECTION_KEY = "drig.admin.section";
-const SECTIONS: ReadonlySet<string> = new Set(["drig", "wiring", "general"]);
+const SECTIONS: ReadonlySet<string> = new Set(["drig", "wiring", "general", "unanswered"]);
 
 const initialSection = (): Section => {
   try {
@@ -25,6 +26,7 @@ const initialSection = (): Section => {
  *   DRIG Standard manuals — DRIG's installation manuals; the assistant answers from these first
  *   DRIG wiring guide     — the vehicle wiring workbook; looked up before Wiresheet
  *   Other manuals         — vendor manuals and everything else, used when DRIG's don't answer
+ * plus Unanswered questions: what technicians asked that none of it answered.
  */
 export default function AdminKnowledgeScreen() {
   const [section, setSection] = useState<Section>(initialSection);
@@ -66,6 +68,10 @@ export default function AdminKnowledgeScreen() {
             <BookOpen aria-hidden />
             Other manuals
           </TabsTrigger>
+          <TabsTrigger value="unanswered" className="min-h-9">
+            <CircleHelp aria-hidden />
+            Unanswered questions
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="drig" className="space-y-4">
@@ -86,6 +92,10 @@ export default function AdminKnowledgeScreen() {
             by an AI model, so a labeled diagram or nameplate photo becomes searchable too.
           </p>
           <ManualsPanel collection="general" />
+        </TabsContent>
+
+        <TabsContent value="unanswered">
+          <UnansweredPanel />
         </TabsContent>
       </Tabs>
     </PageShell>

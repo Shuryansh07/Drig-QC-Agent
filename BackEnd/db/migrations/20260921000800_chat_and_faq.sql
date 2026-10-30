@@ -53,7 +53,10 @@ create index if not exists faq_entry_turn on faq_entry (source_turn_id) where so
 
 -- Nearest resolved questions by cosine similarity (0..1). Same shape as match_chunks:
 -- the only place that uses the vector operator (rule P5).
-create or replace function match_faq(
+-- Dropped first: 0850 changes its return type, and every migration is re-run in
+-- order, so a plain "create or replace" here would fail on a database past 0850.
+drop function if exists match_faq(uuid, extensions.vector, int, double precision);
+create function match_faq(
   p_org_id          uuid,
   p_query_embedding extensions.vector(1536),
   p_match_count     int              default 3,

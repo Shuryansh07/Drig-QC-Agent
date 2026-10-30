@@ -7,6 +7,8 @@ import {
   type DocumentCollection,
   type DocumentListResponse,
   type DriveSyncStatus,
+  type MissKind,
+  type UnansweredListResponse,
   type WiringImport,
 } from "../types";
 
@@ -60,6 +62,23 @@ export function useWiringImports() {
     queryKey: queryKeys.wiringImports(),
     queryFn: () => apiFetch<{ imports: WiringImport[] }>("/wiring/imports"),
     refetchInterval: (query) => (query.state.data?.imports.some((i) => isImportInFlight(i.status)) ? 2000 : false),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  });
+}
+
+export const UNANSWERED_PAGE_SIZE = 20;
+
+/** GET /api/conversations/unanswered?page=&page_size=&q=&kind= — questions the assistant did not answer, newest first. */
+export function useUnansweredQuestions(page: number, search: string, kind: MissKind | null) {
+  return useQuery({
+    queryKey: queryKeys.unanswered(page, search, kind ?? "all"),
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(page), page_size: String(UNANSWERED_PAGE_SIZE) });
+      if (search) params.set("q", search);
+      if (kind) params.set("kind", kind);
+      return apiFetch<UnansweredListResponse>(`/conversations/unanswered?${params}`);
+    },
     staleTime: 0,
     refetchOnWindowFocus: true,
   });

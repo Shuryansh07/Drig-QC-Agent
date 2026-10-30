@@ -4,6 +4,7 @@ import {
   streamAnswer,
   sourcesFromChunks,
   loadEvidenceImages,
+  imagesCitedBy,
   INSUFFICIENT_EVIDENCE_ANSWER,
 } from "../services/answerGeneration.service.js";
 import { verifyAnswer } from "../services/answerVerification.service.js";
@@ -11,13 +12,14 @@ import * as storage from "../services/storage.service.js";
 import { recordGap } from "../db/gaps.js";
 import { decideClarification, withClarification } from "../services/clarification.service.js";
 import { sanitizeHistory, contextualizeQuestion } from "../services/conversationContext.service.js";
-import { findFaq, mergeFaqChunks } from "../services/faq.service.js";
+import { findFaq, mergeFaqChunks, resolveAdminAnswer } from "../services/faq.service.js";
 import { saveTurn, isUuid } from "../db/chat.js";
 import { markFaqUsed } from "../db/faq.js";
 import { getDeadlineMs, getContextMaxTurns, getClarifyEnabled, getClarifySimilarityGap, getClarifyMinOptions, getClarifyMaxOptions } from "../db/settings.js";
 import { logger } from "../utils/logger.js";
 import { generateEmbedding } from "../services/embedding.service.js";
-import { detectWiringIntent, missingVehicleFields } from "../services/wiring/wiringIntent.service.js";
+import { detectWiringIntent, missingVehicleFields, withJobVehicle } from "../services/wiring/wiringIntent.service.js";
+import { manualsForEquipment } from "../services/equipmentFilter.service.js";
 import { lookupVehicleWiring, composeWiringAnswer } from "../services/wiring/wiringLookup.service.js";
 import { vehicleClarify } from "../services/wiring/wiringChat.service.js";
 import { describeVehicle } from "../services/wiring/vehicleNames.js";
@@ -94,7 +96,7 @@ const answerWiring = async ({ intent, question, send, persist, agentTurnId, requ
     generateEmbedding(question)
       .then((embedding) => recordGap({ queryText: question, queryEmbedding: embedding, retrievedIds: [], reason: "not_covered" }))
       .catch((err) => logger.error("[rag] failed to record wiring gap", err));
-    await persist(agentTurnId, { role: "agent", text: notCovered.message, gateOutcome: "not_covered", turnJson: { notCovered, wiring: { vehicle } } });
+    await persist(agentTurnId, { role: "agent", text: notCovered.message, gateOutcome: "not_covered", turnJson: { notCovered, wiring: { vehicle }, standalone_question: question } });
     send({ type: "not_covered", notCovered });
     return;
   }
@@ -166,7 +168,7 @@ export const queryRag = async (req, res) => {
 
     logger.info(`[rag query] TOTAL request time: ${Date.now() - requestStart}ms`);
 
-    return res.status(200).json({ answer, sources, images: await imagesForResponse(images), verified });
+    return res.status(200).json({ answer, sources, images: await imagesForResponse(imagesCitedBy(answer, images)), verified });
   } catch (error) {
     logger.error("RAG query error", error);
     return res.status(500).json({
@@ -187,12 +189,12 @@ export const queryRag = async (req, res) => {
  *                                                            question does not say which -> stream ends, no
  *                                                            LLM call; the client re-asks with `clarification`
  *   {type:"sources", sources:[{document_id, page_number}]}  as soon as retrieval finishes
- *   {type:"images", images:[{label, url, page, document_id}]}  only when a diagram/photo
- *                                                            was actually attached as evidence —
- *                                                            url is a time-limited S3 link
  *   {type:"stage", stage:"generating"}
  *   {type:"delta", text}                                    repeated, as the model writes
  *   {type:"deadline_warning", elapsedMs}                    only if gate.deadline_ms passes first
+ *   {type:"images", images:[{label, url, page, document_id}]}  after the answer, only the evidence
+ *                                                            diagrams/photos it cites — url is a
+ *                                                            time-limited S3 link
  *   {type:"complete", answer, durationMs, verified}         the whole answer, then the stream ends —
  *                                                            verified is false when Checks 5-7 flagged
  *                                                            a possible issue; the answer is still the
@@ -207,9 +209,42 @@ export const queryRag = async (req, res) => {
  * Lines starting with ":" are heartbeats that keep proxies from closing an idle
  * connection.
  */
+const JOB_FIELD_MAX = 120;
+const jobField = (value) => (typeof value === "string" && value.trim() ? value.trim().slice(0, JOB_FIELD_MAX) : null);
+
+/**
+ * The jobsheet a chat was opened from: { id, car, equipment }, every field optional. Its equipment narrows the
+ * manuals searched (when the question names none) and its car fills a wiring question's vehicle.
+ */
+const jobContext = (job) => {
+  if (!job || typeof job !== "object") return null;
+  const context = { id: jobField(job.id), car: jobField(job.car), equipment: jobField(job.equipment) };
+  return context.id || context.car || context.equipment ? context : null;
+};
+
+/**
+ * GET /api/rag/job-context?equipment=&car= — what the chat will use for a job before anything is asked:
+ * the manuals the job's equipment points at. The chat shows them, so the technician sees it knows the job.
+ */
+export const getJobContext = async (req, res) => {
+  const job = jobContext({ car: req.query.car, equipment: req.query.equipment });
+  try {
+    const manuals = job?.equipment ? await manualsForEquipment([job.equipment]) : [];
+    return res.status(200).json({
+      car: job?.car ?? null,
+      equipment: job?.equipment ?? null,
+      manuals: manuals.map((m) => ({ document_id: m.docId, title: m.title })),
+    });
+  } catch (error) {
+    logger.error("[rag] could not resolve the job's manuals", error);
+    return res.status(500).json({ success: false, message: "Could not look up the manuals for this job" });
+  }
+};
+
 export const streamRagQuery = async (req, res) => {
   const requestStart = Date.now();
   const { question: askedQuestion, clarification, history: rawHistory } = req.body || {};
+  const job = jobContext(req.body?.job);
 
   // Before headers: a bad request is still an ordinary JSON 400.
   if (!askedQuestion || typeof askedQuestion !== "string" || !askedQuestion.trim()) {
@@ -263,7 +298,12 @@ export const streamRagQuery = async (req, res) => {
   try {
     logger.info(`[rag stream] received: "${clarifiedQuestion}"`);
     send({ type: "stage", stage: "retrieving" });
-    await persist(turn_id, { role: "technician", text: (typeof display_text === "string" && display_text.trim()) || askedQuestion.trim() });
+    await persist(turn_id, {
+      role: "technician",
+      text: (typeof display_text === "string" && display_text.trim()) || askedQuestion.trim(),
+      turnJson: job ? { job } : {},
+    });
+    if (job) logger.info(`[rag stream] job context: ${[job.id, job.car, job.equipment].filter(Boolean).join(" · ")}`);
 
     // Conversation context: the last few turns, so a follow-up ("and the wiring?") is searched and
     // answered as the question it really is. A question that stands alone is used as it is.
@@ -273,14 +313,15 @@ export const streamRagQuery = async (req, res) => {
 
     // Vehicle wiring (12V / ignition) is a lookup in the DRIG wiring guide, then Wiresheet, by exact
     // vehicle — not a document search. It needs the year, make, model and start type, so it asks first.
-    const wiringIntent = await detectWiringIntent(question);
+    // From a jobsheet, the job's car fills whatever part of the vehicle the question leaves out.
+    const wiringIntent = withJobVehicle(await detectWiringIntent(question), job?.car);
     if (closed) return;
     if (wiringIntent) {
       await answerWiring({ intent: wiringIntent, question, send, persist, agentTurnId: agent_turn_id, requestStart, isClosed: () => closed });
       return;
     }
 
-    const retrieval = await retrieveRelevantChunks({ question });
+    const retrieval = await retrieveRelevantChunks({ question, jobEquipment: job?.equipment ? [job.equipment] : [] });
     if (closed) return;
 
     // The FAQ of resolved questions, searched with the same question embedding. A close match brings back the
@@ -296,9 +337,33 @@ export const streamRagQuery = async (req, res) => {
       logger.info(`[rag stream] FAQ: ${faq.matches.length} similar resolved question(s), best ${faq.best.similarity.toFixed(3)} ("${faq.best.question}"), ${faq.chunks.length} passage(s)`);
     }
 
+    // An admin wrote the answer to this question (Unanswered questions tab): it is the reply, as written.
+    // No answer generation and no verification — there are no passages to check it against, and an admin
+    // vouched for it. A looser match costs one small model call deciding it is the same question.
+    const adminMatch = await resolveAdminAnswer({ question, faq });
+    if (closed) return;
+    if (adminMatch) {
+      const adminAnswer = adminMatch.entry;
+      logger.info(
+        `[rag stream] answered from an admin-written FAQ entry (similarity ${adminAnswer.similarity.toFixed(3)}, matched by ${adminMatch.how}: "${adminAnswer.question}")`
+      );
+      send({ type: "stage", stage: "generating" });
+      send({ type: "delta", text: adminAnswer.answer });
+      const durationMs = Date.now() - requestStart;
+      send({ type: "complete", answer: adminAnswer.answer, durationMs, verified: true });
+      await persist(agent_turn_id, {
+        role: "agent",
+        text: adminAnswer.answer,
+        gateOutcome: "answered",
+        turnJson: { faqId: adminAnswer.faqId, fromAdmin: true, verified: true, durationMs, standalone_question: question },
+      });
+      markFaqUsed([adminAnswer.faqId]).catch(() => {});
+      return;
+    }
+
     if (!admission.admitted) {
       const notCovered = await refuse({ question, retrieval });
-      await persist(agent_turn_id, { role: "agent", text: notCovered.message, gateOutcome: "not_covered", turnJson: { notCovered } });
+      await persist(agent_turn_id, { role: "agent", text: notCovered.message, gateOutcome: "not_covered", turnJson: { notCovered, standalone_question: question } });
       send({ type: "not_covered", notCovered });
       return;
     }
@@ -320,11 +385,11 @@ export const streamRagQuery = async (req, res) => {
 
     send({ type: "sources", sources: sourcesFromChunks(chunks) });
 
-    // Resolved once, right after retrieval — the same set grounds generation,
-    // verification, and (if the answer survives) what the technician is shown.
+    // Resolved once, right after retrieval — the same set grounds generation and
+    // verification. What the technician is shown is decided after the answer is
+    // written: only the pictures it cites (imagesCitedBy, below).
     const images = await loadEvidenceImages(chunks);
     if (closed) return;
-    if (images.length > 0) send({ type: "images", images: await imagesForResponse(images) });
 
     send({ type: "stage", stage: "generating" });
 
@@ -357,6 +422,13 @@ export const streamRagQuery = async (req, res) => {
       }
     }
 
+    const shownImages = imagesCitedBy(finalAnswer, images);
+    if (images.length > shownImages.length) {
+      logger.info(`[rag stream] showing ${shownImages.length} of ${images.length} evidence image(s): the answer cites only those pages`);
+    }
+    if (shownImages.length > 0) send({ type: "images", images: await imagesForResponse(shownImages) });
+    if (closed) return;
+
     const durationMs = Date.now() - requestStart;
     send({ type: "complete", answer: finalAnswer, durationMs, verified });
     if (finalAnswer !== INSUFFICIENT_EVIDENCE_ANSWER) {
@@ -368,7 +440,7 @@ export const streamRagQuery = async (req, res) => {
         gateOutcome: "answered",
         turnJson: {
           sources: sourcesFromChunks(chunks),
-          images: images.map((i) => ({ label: i.label, docId: i.docId, page: i.page, s3Key: i.s3Key })),
+          images: shownImages.map((i) => ({ label: i.label, docId: i.docId, page: i.page, s3Key: i.s3Key })),
           verified,
           durationMs,
           standalone_question: question,
@@ -376,6 +448,15 @@ export const streamRagQuery = async (req, res) => {
         },
       });
       markFaqUsed(faq.matches.map((m) => m.faqId)).catch(() => {});
+    } else {
+      // The passages were admitted but the model found no answer in them. Saved so the admin's
+      // unanswered-questions list shows it; no source_chunk_ids, so it can never become an FAQ.
+      await persist(agent_turn_id, {
+        role: "agent",
+        text: finalAnswer,
+        gateOutcome: "answered",
+        turnJson: { noAnswer: true, verified, durationMs, standalone_question: question, sources: sourcesFromChunks(chunks) },
+      });
     }
     logger.info(`[rag stream] TOTAL request time: ${Date.now() - requestStart}ms`);
   } catch (error) {

@@ -17,6 +17,10 @@ import { logger } from "../utils/logger.js";
 //      "AD Plus2.0 Series Product User Manual".
 // No equipment named, no document matched, a failure or a timeout: all mean
 // "no filter", and retrieval searches everything as before.
+//
+// A chat opened from a jobsheet knows the job's equipment already. It is used
+// when the question names none ("where does the SIM go?"); a question that names
+// equipment of its own is about that equipment instead.
 
 const EXTRACT_MODEL = process.env.OPENAI_EQUIPMENT_MODEL || process.env.OPENAI_REWRITE_MODEL || "gpt-4o-mini";
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EQUIPMENT_EXTRACT_TIMEOUT_MS || "5000", 10);
@@ -38,7 +42,7 @@ const getCatalog = async () => {
     const text = [entry.title.replace(/\.(pdf|docx|jpe?g|png)$/i, ""), entry.vendor, entry.productFamily, ...entry.models]
       .filter(Boolean)
       .join(" ");
-    return { docId: entry.docId, squashed: squash(text), words: new Set(words(text)) };
+    return { docId: entry.docId, title: entry.title, squashed: squash(text), words: new Set(words(text)) };
   });
   catalogCache = { entries, expiresAt: Date.now() + CATALOG_TTL_MS };
   return entries;
@@ -81,28 +85,45 @@ const documentsNamed = (name, catalog) => {
   return catalog.filter((entry) => nameWords.every((w) => entry.words.has(w)));
 };
 
+/** The live documents about any of these equipment names, by title. */
+const documentsFor = (names, catalog) => {
+  const byId = new Map();
+  for (const name of names) for (const entry of documentsNamed(name, catalog)) byId.set(entry.docId, entry);
+  return [...byId.values()];
+};
+
+/**
+ * The manuals a jobsheet's equipment points at, for the chat to show before anything is asked.
+ * @returns {Promise<{ docId: string, title: string }[]>}
+ */
+export const manualsForEquipment = async (names) =>
+  documentsFor(names, await getCatalog()).map((entry) => ({ docId: entry.docId, title: entry.title }));
+
 /**
  * @param {string} question  the standalone question (follow-ups already rewritten)
- * @returns {Promise<{ equipment: string[], docIds: string[] | null }>}
+ * @param {string[]} [jobEquipment]  the equipment of the jobsheet the chat was opened from; used when the question names none
+ * @returns {Promise<{ equipment: string[], docIds: string[] | null, from: "question" | "job" | null }>}
  *   docIds is null when retrieval should not be filtered.
  */
-export const resolveEquipmentFilter = async (question) => {
+export const resolveEquipmentFilter = async (question, jobEquipment = []) => {
   try {
-    const [equipment, catalog] = await Promise.all([extractEquipmentNames(question), getCatalog()]);
-    if (equipment.length === 0) return { equipment, docIds: null };
+    const [asked, catalog] = await Promise.all([extractEquipmentNames(question).catch(() => []), getCatalog()]);
+    const from = asked.length > 0 ? "question" : jobEquipment.length > 0 ? "job" : null;
+    const equipment = from === "question" ? asked : jobEquipment;
+    if (equipment.length === 0) return { equipment, docIds: null, from };
 
-    const docIds = [...new Set(equipment.flatMap((name) => documentsNamed(name, catalog).map((entry) => entry.docId)))];
+    const docIds = documentsFor(equipment, catalog).map((entry) => entry.docId);
 
     // Equipment named but nothing in the catalog is about it: searching everything is still the best chance.
     if (docIds.length === 0) {
-      logger.info(`[equipment] "${equipment.join(", ")}" matches no document title; not filtering`);
-      return { equipment, docIds: null };
+      logger.info(`[equipment] "${equipment.join(", ")}" (from the ${from}) matches no document title; not filtering`);
+      return { equipment, docIds: null, from };
     }
 
-    logger.info(`[equipment] "${equipment.join(", ")}" -> ${docIds.length} document(s)`);
-    return { equipment, docIds };
+    logger.info(`[equipment] "${equipment.join(", ")}" (from the ${from}) -> ${docIds.length} document(s)`);
+    return { equipment, docIds, from };
   } catch (err) {
-    logger.warn(`[equipment] extraction failed (${err.message}); not filtering`);
-    return { equipment: [], docIds: null };
+    logger.warn(`[equipment] lookup failed (${err.message}); not filtering`);
+    return { equipment: [], docIds: null, from: null };
   }
 };

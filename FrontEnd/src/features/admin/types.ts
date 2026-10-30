@@ -231,3 +231,29 @@ export interface DeleteResponse {
   /** Cleanup that failed after the document itself was removed, e.g. the WorkDrive original. */
   warnings?: string[];
 }
+
+/** Why a question went unanswered (BackEnd/src/db/chat.ts, listUnanswered). */
+export type MissKind = "not_found" | "no_answer" | "not_resolved" | "no_reply";
+
+export interface UnansweredQuestion {
+  turn_id: string;
+  session_id: string;
+  kind: MissKind;
+  /** As searched: a follow-up rewritten to stand alone, when the server recorded it. */
+  question: string;
+  /** What the technician typed (or picked, after a clarification). */
+  asked: string;
+  /** The assistant's reply; null when none was saved. */
+  reply: string | null;
+  created_at: string;
+}
+
+export interface UnansweredListResponse {
+  questions: UnansweredQuestion[];
+  /** Per kind, ignoring the kind filter, so every filter chip can show its count. */
+  counts: Record<MissKind, number>;
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}

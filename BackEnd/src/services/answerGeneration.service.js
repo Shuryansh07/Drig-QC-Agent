@@ -15,6 +15,9 @@ const ANSWER_IMAGE_MODEL = process.env.OPENAI_ANSWER_IMAGE_MODEL || "gpt-4.1";
 const ANSWER_MAX_FIGURE_IMAGES = parseInt(process.env.ANSWER_MAX_FIGURE_IMAGES || "2", 10);
 // Only the best-ranked evidence brings its pictures along; lower-ranked hits are rarely what the question is about.
 const ANSWER_FIGURE_FROM_TOP_CHUNKS = parseInt(process.env.ANSWER_FIGURE_FROM_TOP_CHUNKS || "3", 10);
+// ...and of those, only evidence this close (cosine) to the best match. Rank alone let a loosely related
+// third hit (an app-settings screenshot for a SIM-card question) attach its page's pictures.
+const ANSWER_FIGURE_SIMILARITY_GAP = parseFloat(process.env.ANSWER_FIGURE_SIMILARITY_GAP || "0.08");
 
 const SYSTEM_PROMPT = `You are a technical support assistant answering questions from retrieved document evidence, talking directly to the person who asked.
 
@@ -103,8 +106,10 @@ export const buildMessages = ({ question, chunks, images = [], history = [], faq
 export const loadEvidenceImages = async (chunks) => {
   if (ANSWER_MAX_FIGURE_IMAGES <= 0) return [];
 
+  const best = Math.max(0, ...chunks.map((c) => c.similarity ?? 0));
   const refs = chunks
     .slice(0, ANSWER_FIGURE_FROM_TOP_CHUNKS)
+    .filter((c) => c.similarity === undefined || c.similarity === null || c.similarity >= best - ANSWER_FIGURE_SIMILARITY_GAP)
     .filter((c) => c.imageHash || (c.pageNumber !== null && c.pageNumber !== undefined))
     .map((c) => ({ docId: c.documentId, contentHash: c.imageHash ?? null, page: c.imageHash ? null : c.pageNumber }));
 
@@ -135,6 +140,9 @@ export const loadEvidenceImages = async (chunks) => {
           s3Key: figure.s3Key,
           docId: figure.docId,
           page: figure.page,
+          pageLabel: figure.page !== null ? (labelOf.get(`${figure.docId}:${figure.page}`) ?? null) : null,
+          // A Word picture has no page: it is cited through the section of the chunk that brought it.
+          sections: chunks.filter((c) => c.documentId === figure.docId && c.sectionPath).map((c) => c.sectionPath),
         };
       } catch (err) {
         logger.error(`[answer] could not load evidence image ${figure.s3Key} (skipped)`, err);
@@ -146,6 +154,37 @@ export const loadEvidenceImages = async (chunks) => {
 };
 
 const ATTACHABLE = /\.(png|jpg|jpeg|webp|gif)$/i;
+
+// "(Page 16)", "(Pages 7, 8)", "(Page 7-9)", "printed page 8", "the photo on page 12".
+const PAGE_MENTION_RE = /\bpages?\s+(\d+(?:\s*(?:,|and|&|-|–|to)\s*\d+)*)/gi;
+const SECTION_CITATION_RE = /\(Section:\s*([^)]+)\)/gi;
+
+/**
+ * The evidence images the written answer actually points at: a picture is shown
+ * to the technician only when the answer cites its page (by place in the file or
+ * by the number printed on it) or, for a Word picture with no page, the section
+ * it came from. The model still read every attached image; this decides what is
+ * shown next to the answer, so a picture the answer never used does not look
+ * like part of it. A refusal shows none.
+ */
+export const imagesCitedBy = (answer, images) => {
+  if (!answer || answer === INSUFFICIENT_EVIDENCE_ANSWER || images.length === 0) return [];
+
+  const pages = new Set();
+  for (const [, list] of answer.matchAll(PAGE_MENTION_RE)) {
+    for (const part of list.split(/\s*(?:,|and|&)\s*/)) {
+      const [from, to] = part.split(/\s*(?:-|–|to)\s*/).map(Number);
+      for (let n = from; n <= (to || from) && n - from < 50; n++) pages.add(String(n));
+    }
+  }
+  const sections = [...answer.matchAll(SECTION_CITATION_RE)].map((m) => m[1].trim().toLowerCase());
+
+  return images.filter((img) =>
+    img.page !== null && img.page !== undefined
+      ? pages.has(String(img.page)) || (img.pageLabel && pages.has(img.pageLabel))
+      : (img.sections ?? []).some((path) => sections.some((s) => path.toLowerCase().includes(s)))
+  );
+};
 
 export const modelFor = (images) => (images.length > 0 ? ANSWER_IMAGE_MODEL : VISION_MODEL);
 

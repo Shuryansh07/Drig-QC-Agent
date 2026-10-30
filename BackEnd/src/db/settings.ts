@@ -48,6 +48,9 @@ export const getFaqMinSimilarity = () => get<number>("faq.min_similarity", 0.8);
 export const getFaqStrongSimilarity = () => get<number>("faq.strong_similarity", 0.92);
 export const getFaqMatchCount = () => get<number>("faq.match_count", 3);
 export const getFaqDedupeSimilarity = () => get<number>("faq.dedupe_similarity", 0.97);
+// An admin-written answer between `admin_loose_similarity` and `strong_similarity` is given only when a small
+// model call agrees it asks the same thing (keyword queries like "jupiter moon count" score ~0.67).
+export const getFaqAdminLooseSimilarity = () => get<number>("faq.admin_loose_similarity", 0.6);
 // Conversation context: how many earlier turns travel with a question (0 turns off follow-up understanding).
 export const getContextMaxTurns = () => get<number>("context.max_turns", 6);
 // Check 1: ask the technician which guide they mean when several match equally well.
