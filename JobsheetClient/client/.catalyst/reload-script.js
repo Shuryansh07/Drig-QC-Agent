@@ -1,4 +1,4 @@
-const reloadSocket = new WebSocket('ws://localhost:5004/client-reload');
+const reloadSocket = new WebSocket('ws://localhost:5001/client-reload');
 
 reloadSocket.onopen = () => {
 	console.log('Connection established with the server');
